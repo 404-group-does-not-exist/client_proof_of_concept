@@ -1,2 +1,4 @@
-pcapy
+pcapy==0.11.4
+pytimerfd
 dpkt
+pyric
