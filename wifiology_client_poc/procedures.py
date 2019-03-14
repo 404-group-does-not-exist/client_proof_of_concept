@@ -34,6 +34,13 @@ def raise_stop(*args, **kwargs):
     raise StopException
 
 
+def binary_to_mac(bin):
+    if isinstance(bin, bytes):
+        return ':'.join(("{:02x}".format(c)) for c in bin)
+    else:
+        return ':'.join(("{:02x}".format(ord(c))) for c in bin)
+
+
 def capture_argparse_args_to_kwargs(args):
     return {
         'wireless_interface': args.interface,
@@ -103,22 +110,17 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
     pcap_dev.set_buffer_size(15 * 1024 * 1024)
 
     procedure_logger.info("Opening capture file: {0}".format(capture_file))
+    procedure_logger.info("Arming and activating live capture...")
     pcap_dev.activate()
     fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
     timerfd.settime(fd, 0, sample_seconds, 0)
 
     dumper = pcap_dev.dump_open(capture_file)
 
-    procedure_logger.info("Arming and activating live capture...")
-
-    def live_capture(hdr, data):
+    hdr, data = pcap_dev.next()
+    while hdr and not select.select([fd], [], [], 0)[0]:
         dumper.dump(hdr, data)
-        if select.select([fd], [], [], 0)[0]:
-            raise StopException
-    try:
-        pcap_dev.loop(0, live_capture)
-    except StopException:
-        pass
+        hdr, data = pcap_dev.next()
     dumper.close()
     pcap_dev.close()
 
@@ -127,6 +129,7 @@ def run_offline_analysis(capture_file, sample_seconds, channel):
     counter = 0
     frame_counter = defaultdict(int)
     ssid_data = {}
+    mac_addresses = set()
     ctl_counter = defaultdict(int)
 
     pcap_offline_dev = pcapy.open_offline(capture_file)
@@ -149,7 +152,7 @@ def run_offline_analysis(capture_file, sample_seconds, channel):
                             'beacons': 0
                         }
                     ssid_data[ssid_name]['stations'].add(
-                        (frame.mgmt.src, channel)
+                        (binary_to_mac(frame.mgmt.src), channel)
                     )
                     ssid_data[ssid_name]['beacons'] += 1
 
@@ -163,6 +166,8 @@ def run_offline_analysis(capture_file, sample_seconds, channel):
                     ctl_counter['ACK'] += 1
             elif frame_type == dpkt.ieee80211.DATA_TYPE:
                 frame_counter['data'] += 1
+                mac_addresses.add(binary_to_mac(frame.data_frame.src))
+                mac_addresses.add(binary_to_mac(frame.data_frame.dst))
             else:
                 frame_counter['other'] += 1
 
@@ -177,21 +182,15 @@ def run_offline_analysis(capture_file, sample_seconds, channel):
         'total_counter': counter,
         'frame_counter': frame_counter,
         'ssid_data': ssid_data,
-        'ctl_counters': ctl_counter
+        'ctl_counters': ctl_counter,
+        'unique_macs': mac_addresses,
+        'sample_seconds': sample_seconds
     }
 
 
 def run_capture(wireless_interface, log_file, tmp_dir, verbose=False, sample_seconds=10):
     try:
         setup_logging(log_file, verbose)
-
-        frame_stats = {}
-        ssid_map = defaultdict(set)
-        ssid_data = {}
-
-        channel_data_rate = defaultdict(int)
-        channel_packet_rate = defaultdict(int)
-        data_s2d_packet_rate = defaultdict(lambda: defaultdict(int))
 
         procedure_logger.info("Loading card handle from interface name..")
         card = pyw.getcard(wireless_interface)
@@ -208,14 +207,12 @@ def run_capture(wireless_interface, log_file, tmp_dir, verbose=False, sample_sec
             pyw.down(card)
             pyw.up(card)
             pyw.chset(card, channel, None)
-
-            frame_stats[channel] = defaultdict(int)
             procedure_logger.info("Opening the pcap driver...")
             capture_file = os.path.join(tmp_dir, "channel{0}-{1}.pcap".format(channel, time.time()))
 
             try:
                 procedure_logger.info("Beginning live capture...")
-                run_live_capture(wireless_interface, capture_file, sample_seconds)
+                result = run_live_capture(wireless_interface, capture_file, sample_seconds)
                 procedure_logger.info("Starting offline analysis...")
                 data = run_offline_analysis(capture_file, sample_seconds, channel)
                 procedure_logger.info("Analysis data: {0}".format(pprint.pformat(data)))
