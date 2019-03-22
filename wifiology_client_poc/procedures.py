@@ -14,6 +14,12 @@ import pprint
 import os
 from collections import defaultdict
 
+
+from wifiology_client_poc.core_sqlite import create_connection
+from wifiology_client_poc.queries import write_schema
+from wifiology_client_poc.models import Measurement, \
+    RadioDevice, SSID
+
 capture_argument_parser = argparse.ArgumentParser('wifiology_capture')
 capture_argument_parser.add_argument("interface", type=str, help="The WiFi interface to capture on.")
 capture_argument_parser.add_argument("tmp_dir", type=str, help="The temporary storage directory (preferably tmpfs)")
@@ -21,6 +27,9 @@ capture_argument_parser.add_argument("-l", "--log-file", type=str, default="-", 
 capture_argument_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose mode.")
 capture_argument_parser.add_argument(
     "-s", "--sample-seconds", default=10, type=int, help="The number of seconds to sample each channel."
+)
+capture_argument_parser.add_argument(
+    "-db", "--database-loc", default=":memory:"
 )
 
 procedure_logger = logging.getLogger(__name__)
@@ -47,7 +56,8 @@ def capture_argparse_args_to_kwargs(args):
         'log_file': args.log_file,
         'tmp_dir': args.tmp_dir,
         'verbose': args.verbose,
-        'sample_seconds': args.sample_seconds
+        'sample_seconds': args.sample_seconds,
+        'database_loc': args.database_loc
     }
 
 
@@ -114,6 +124,7 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
     pcap_dev.activate()
     fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
     timerfd.settime(fd, 0, sample_seconds, 0)
+    start_time = time.time()
 
     dumper = pcap_dev.dump_open(capture_file)
 
@@ -123,9 +134,11 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
         hdr, data = pcap_dev.next()
     dumper.close()
     pcap_dev.close()
+    end_time = time.time()
+    return start_time, end_time, sample_seconds
 
 
-def run_offline_analysis(capture_file, sample_seconds, channel):
+def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, channel):
     counter = 0
     frame_counter = defaultdict(int)
     ssid_data = {}
@@ -178,19 +191,42 @@ def run_offline_analysis(capture_file, sample_seconds, channel):
             )
         header, payload = pcap_offline_dev.next()
     pcap_offline_dev.close()
-    return {
-        'total_counter': counter,
-        'frame_counter': frame_counter,
-        'ssid_data': ssid_data,
-        'ctl_counters': ctl_counter,
-        'unique_macs': mac_addresses,
-        'sample_seconds': sample_seconds
-    }
+
+    measurement =  Measurement.new(
+        start_time, end_time, sample_seconds, channel, frame_counter.get('mgmt', 0),
+        frame_counter.get('ctl', 0), frame_counter.get('data', 0), extra_data={
+
+        }
+    )
+    radios = [
+        RadioDevice.new(mac_addr) for mac_addr in mac_addresses
+    ]
+    ssids = [
+        SSID.new()
+    ]
+
+    return measurement, radios, ssids
+    # return {
+    #     'total_counter': counter,
+    #     'frame_counter': frame_counter,
+    #     'ssid_data': ssid_data,
+    #     'ctl_counters': ctl_counter,
+    #     'unique_macs': mac_addresses,
+    #     'sample_seconds': sample_seconds
+    # }
 
 
-def run_capture(wireless_interface, log_file, tmp_dir, verbose=False, sample_seconds=10):
+def write_offline_analysis_to_database(db_conn, data, start_time, end_time, duration):
+    pass
+
+
+def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
+                verbose=False, sample_seconds=10):
     try:
         setup_logging(log_file, verbose)
+
+        db_conn = create_connection(database_loc)
+        write_schema(db_conn)
 
         procedure_logger.info("Loading card handle from interface name..")
         card = pyw.getcard(wireless_interface)
@@ -212,10 +248,17 @@ def run_capture(wireless_interface, log_file, tmp_dir, verbose=False, sample_sec
 
             try:
                 procedure_logger.info("Beginning live capture...")
-                result = run_live_capture(wireless_interface, capture_file, sample_seconds)
+                start_time, end_time, duration = run_live_capture(wireless_interface, capture_file, sample_seconds)
                 procedure_logger.info("Starting offline analysis...")
-                data = run_offline_analysis(capture_file, sample_seconds, channel)
+                data = run_offline_analysis(
+                    capture_file, start_time, end_time, duration, channel
+                )
                 procedure_logger.info("Analysis data: {0}".format(pprint.pformat(data)))
+                procedure_logger.info("Writing analysis data to database...")
+                write_offline_analysis_to_database(
+                    db_conn, data, start_time, end_time, duration
+                )
+                procedure_logger.info("Data written...")
             finally:
                 procedure_logger.info("Cleaning up capture file..")
                 if os.path.exists(capture_file):
