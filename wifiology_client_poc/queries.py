@@ -12,7 +12,7 @@ def write_schema(connection):
     schema = load_raw_file("schema.sql", SQL_FOLDER)
     connection.executescript(schema)
 
-
+#helps grab rows after a and before b
 def limit_offset_helper(limit, offset, extra_params=None):
     params = extra_params or {}
     clause = ""
@@ -163,3 +163,52 @@ def select_stations_for_service_set(connection, service_set_id):
             {"serviceSetID": service_set_id}
         )
         return [Station.from_row(r) for r in c.fetchall()]
+
+
+def insert_measurement_station(transaction, measurement_id, station_mac):
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            INSERT INTO measurementStationMap(
+               mapMeasurementID, mapStationID
+            ) SELECT :measurementID, s.stationID 
+            FROM station AS s
+            WHERE s.macAddress = :stationMac            
+            """,
+            {"measurementID": measurement_id, "stationMac": station_mac}
+        )     
+
+def select_stations_for_measurement(connection, measurement_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+          """
+          SELECT * FROM station as s
+          WHERE s.stationID in (
+            SELECT mapStationID FROM measurementStationMap
+            WHERE mapMeasurementID = :measurement_id
+          )
+          """,
+          {"measurement_id": measurement_id}
+        )
+        return [Station.from_row(r) for r in c.fetchall()]
+
+
+def insert_measurement_service_set(transaction, measurement_id, network_name):
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            INSERT INTO measurementStationMap(
+               mapMeasurementID, mapServiceSetID
+            ) SELECT :measurementID, ss.serviceSetID
+            FROM serviceSet AS ss
+            WHERE s.networkName = :network_name            
+            """,
+            {"measurementID": measurement_id, "network_name": network_name}
+        )     
+
+
+
+
+
+
+

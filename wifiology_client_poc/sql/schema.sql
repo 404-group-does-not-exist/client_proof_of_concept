@@ -33,3 +33,17 @@ CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(
      mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
      PRIMARY KEY(mapStationID, mapServiceSetID)
 );
+
+CREATE TABLE IF NOT EXISTS measurementStationMap(
+    mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID),
+    mapStationID INTEGER NOT NULL REFERENCES station(stationID), -- can we use the same name as line 30?
+    PRIMARY KEY(mapMeasurementID, mapStationID)
+);
+
+CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
+    mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID), -- can we use the same name as line 36?
+    mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
+    PRIMARY KEY(mapMeasurementID, mapServiceSetID)
+);
+
+
