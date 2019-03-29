@@ -13,21 +13,23 @@ CREATE TABLE IF NOT EXISTS measurement(
     extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE INDEX IF NOT EXISTS measurement_channel_startTime_IDX ON measurement(channel, measurementStartTime);
 
-CREATE TABLE IF NOT EXISTS radioDevice(
-    radioDeviceID INTEGER PRIMARY KEY,
+
+CREATE TABLE IF NOT EXISTS station(
+    stationID INTEGER PRIMARY KEY,
     macAddress TEXT UNIQUE NOT NULL,
     extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE TABLE IF NOT EXISTS ssid(
-    ssidID INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS serviceSet(
+    serviceSetID INTEGER PRIMARY KEY,
     networkName TEXT UNIQUE NOT NULL,
     extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE TABLE IF NOT EXISTS radioServiceSetMap(
-     mapRadioDeviceID INTEGER NOT NULL REFERENCES radioDevice(radioDeviceID),
-     mapServiceSetIdentifierID INTEGER NOT NULL REFERENCES ssid(ssidID),
-     PRIMARY KEY(mapRadioDeviceID, mapServiceSetIdentifierID)
+CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(
+     mapStationID INTEGER NOT NULL REFERENCES station(stationID),
+     mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
+     PRIMARY KEY(mapStationID, mapServiceSetID)
 );

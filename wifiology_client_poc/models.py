@@ -24,9 +24,6 @@ class RecordObject(object):
     def new(cls, *args, **kwargs):
         raise NotImplementedError
 
-    def copy(self, **kwargs):
-        raise NotImplementedError
-
     def to_row(self, prefix=""):
         raise NotImplementedError
 
@@ -113,13 +110,13 @@ class Measurement(RecordObject):
             'managementFrameCount': self.management_frame_count,
             'controlFrameCount': self.control_frame_count,
             'dataFrameCount': self.data_frame_count,
-            'extraData': self._json_dumps(self.extra_data)
+            'extraData': self.extra_data
         }
 
 
-class RadioDevice(RecordObject):
-    def __init__(self, radio_device_id, mac_address, extra_data):
-        self.radio_device_id = radio_device_id
+class Station(RecordObject):
+    def __init__(self, station_id, mac_address, extra_data):
+        self.station_id = station_id
         self.mac_address = mac_address
         self.extra_data = extra_data
 
@@ -129,7 +126,7 @@ class RadioDevice(RecordObject):
             return None
         else:
             return cls(
-                row[prefix + "radioDeviceID"],
+                row[prefix + "stationID"],
                 row[prefix + "macAddress"],
                 cls._json_loads(row[prefix + "extraJSONData"])
             )
@@ -142,22 +139,22 @@ class RadioDevice(RecordObject):
 
     def to_row(self, prefix=""):
         return {
-            prefix + 'radioDeviceID': self.radio_device_id,
+            prefix + 'stationID': self.station_id,
             prefix + 'macAddress': self.mac_address,
             prefix + 'extraJSONData': self._json_dumps(self.extra_data)
         }
 
     def to_api_response(self):
         return {
-            'radioDeviceID': self.radio_device_id,
+            'stationID': self.station_id,
             'macAddress': self.mac_address,
             'extraData': self.extra_data
         }
 
 
-class SSID(RecordObject):
-    def __init__(self, ssid_id, network_name, extra_data):
-        self.ssid_id = ssid_id
+class ServiceSet(RecordObject):
+    def __init__(self, service_set_id, network_name, extra_data):
+        self.service_set_id = service_set_id
         self.network_name = network_name
         self.extra_data = extra_data
 
@@ -167,7 +164,7 @@ class SSID(RecordObject):
             return None
         else:
             return cls(
-                row[prefix + "ssidID"],
+                row[prefix + "serviceSetID"],
                 row[prefix + "networkName"],
                 cls._json_loads(row[prefix + "extraJSONData"])
             )
@@ -180,14 +177,14 @@ class SSID(RecordObject):
 
     def to_row(self, prefix=""):
         return {
-            prefix + 'ssidID': self.ssid_id,
+            prefix + 'serviceSetID': self.service_set_id,
             prefix + 'networkName': self.network_name,
             prefix + 'extraJSONData': self._json_dumps(self.extra_data)
         }
 
     def to_api_response(self):
         return {
-            'ssidID': self.ssid_id,
+            'serviceSetID': self.service_set_id,
             'networkName': self.network_name,
             'extraData': self.extra_data
         }

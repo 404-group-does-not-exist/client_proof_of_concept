@@ -15,10 +15,11 @@ import os
 from collections import defaultdict
 
 
-from wifiology_client_poc.core_sqlite import create_connection
-from wifiology_client_poc.queries import write_schema
+from wifiology_client_poc.core_sqlite import create_connection, transaction_wrapper
+from wifiology_client_poc.queries import write_schema, insert_measurement, insert_service_set_station, \
+    insert_station, insert_service_set, select_station_by_mac_address, select_service_set_by_network_name
 from wifiology_client_poc.models import Measurement, \
-    RadioDevice, SSID
+    Station, ServiceSet
 
 capture_argument_parser = argparse.ArgumentParser('wifiology_capture')
 capture_argument_parser.add_argument("interface", type=str, help="The WiFi interface to capture on.")
@@ -30,6 +31,10 @@ capture_argument_parser.add_argument(
 )
 capture_argument_parser.add_argument(
     "-db", "--database-loc", default=":memory:"
+)
+capture_argument_parser.add_argument(
+    "-r", "--capture-rounds", default=0, type=int,
+    help="The number of rounds of captures to run before exiting. 0 will run forever."
 )
 
 procedure_logger = logging.getLogger(__name__)
@@ -57,7 +62,8 @@ def capture_argparse_args_to_kwargs(args):
         'tmp_dir': args.tmp_dir,
         'verbose': args.verbose,
         'sample_seconds': args.sample_seconds,
-        'database_loc': args.database_loc
+        'database_loc': args.database_loc,
+        'rounds': args.capture_rounds
     }
 
 
@@ -192,20 +198,21 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
         header, payload = pcap_offline_dev.next()
     pcap_offline_dev.close()
 
-    measurement =  Measurement.new(
+    measurement = Measurement.new(
         start_time, end_time, sample_seconds, channel, frame_counter.get('mgmt', 0),
         frame_counter.get('ctl', 0), frame_counter.get('data', 0), extra_data={
 
         }
     )
-    radios = [
-        RadioDevice.new(mac_addr) for mac_addr in mac_addresses
-    ]
-    ssids = [
-        SSID.new()
+
+    stations = [
+        Station.new(mac_addr) for mac_addr in mac_addresses
     ]
 
-    return measurement, radios, ssids
+    service_sets = [
+        ServiceSet.new(name) for name in ssid_data.keys()
+    ]
+    return measurement, stations, service_sets, ssid_data
     # return {
     #     'total_counter': counter,
     #     'frame_counter': frame_counter,
@@ -216,14 +223,34 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     # }
 
 
-def write_offline_analysis_to_database(db_conn, data, start_time, end_time, duration):
-    pass
+def write_offline_analysis_to_database(db_conn, analysis_data):
+    measurement, stations, service_sets, ssid_data = analysis_data
+
+    with transaction_wrapper(db_conn) as t:
+        measurement.measurement_id = insert_measurement(
+            t, measurement
+        )
+        for station in stations:
+            opt_station = select_station_by_mac_address(t, station.mac_address)
+            if opt_station:
+                station.station_id = opt_station.station_id
+            else:
+                station.station_id = insert_station(t, station)
+        for service_set in service_sets:
+            opt_service_set = select_service_set_by_network_name(t, service_set.network_name)
+            if opt_service_set:
+                service_set.service_set_id = opt_service_set.service_set_id
+            else:
+                service_set.service_set_id = insert_service_set(t, service_set)
 
 
 def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
-                verbose=False, sample_seconds=10):
+                verbose=False, sample_seconds=10, rounds=0):
     try:
         setup_logging(log_file, verbose)
+
+        run_forever = rounds == 0
+
 
         db_conn = create_connection(database_loc)
         write_schema(db_conn)
@@ -237,72 +264,38 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
 
         procedure_logger.info("Beginning channel scan.")
 
-        for channel in range(1, 12):
-            procedure_logger.info("Channging to channel {0}".format(channel))
+        current_round = 0
+        while run_forever or rounds > 0:
+            procedure_logger.info("Executing capture round {0}".format(current_round))
+            for channel in range(1, 12):
+                procedure_logger.info("Changing to channel {0}".format(channel))
 
-            pyw.down(card)
-            pyw.up(card)
-            pyw.chset(card, channel, None)
-            procedure_logger.info("Opening the pcap driver...")
-            capture_file = os.path.join(tmp_dir, "channel{0}-{1}.pcap".format(channel, time.time()))
+                pyw.down(card)
+                pyw.up(card)
+                pyw.chset(card, channel, None)
+                procedure_logger.info("Opening the pcap driver...")
+                capture_file = os.path.join(tmp_dir, "channel{0}-{1}.pcap".format(channel, time.time()))
 
-            try:
-                procedure_logger.info("Beginning live capture...")
-                start_time, end_time, duration = run_live_capture(wireless_interface, capture_file, sample_seconds)
-                procedure_logger.info("Starting offline analysis...")
-                data = run_offline_analysis(
-                    capture_file, start_time, end_time, duration, channel
-                )
-                procedure_logger.info("Analysis data: {0}".format(pprint.pformat(data)))
-                procedure_logger.info("Writing analysis data to database...")
-                write_offline_analysis_to_database(
-                    db_conn, data, start_time, end_time, duration
-                )
-                procedure_logger.info("Data written...")
-            finally:
-                procedure_logger.info("Cleaning up capture file..")
-                if os.path.exists(capture_file):
-                    os.unlink(capture_file)
-
-
-
-
-
-
-
-#
-        #            channel_data_rate[channel] += len(frame)
-        #            channel_packet_rate[channel] += 1
-#
-        #            # Beacon frames used to find APs broadcasting on this channel.
-        #            if frame_type == dpkt.ieee80211.MGMT_TYPE and frame_subtype == dpkt.ieee80211.M_BEACON:
-        #                ssid_map[frame.ssid.data].add((frame.mgmt.src, channel))
-        #                ssid_data[frame.ssid.data] = {
-        #                    'rate': rate_decoder(frame.rate.data),
-        #                    'qos': frame.capability.qos,
-        #                    'short_preamble': frame.capability.short_preamble
-        #                }
-        #            # Any data frames should be analyzed.
-        #            if frame_type == dpkt.ieee80211.DATA_TYPE:
-        #                data_s2d_packet_rate[frame.data_frame.src][frame.data_frame.dst] += 1
-#
-        #            header, payload = pcap_dev.next()
-        #        except dpkt.dpkt.UnpackError:
-        #            logging.warning("dpkt lacks support for some IE80211 features. This could be causing spurious decode problems.")
-#
-        #    channel_data_rate[channel] /= (1.0*sample_seconds)
-        #    channel_packet_rate[channel] /= (1.0*sample_seconds)
-#
-        #    print("CH", channel, "STATS", pcap_dev.stats())
-#
-        #    procedure_logger.info("Channel total data rate: {0} b/s".format(channel_data_rate[channel]))
-        #    procedure_logger.info("Channel total packet rate: {0} p/s".format(channel_packet_rate[channel]))
-        #procedure_logger.info("SSID channel/mac map: {0}".format(dict(ssid_map)))
-        #procedure_logger.info("SSID Data: {0}".format(ssid_data))
-        #for src in data_s2d_packet_rate:
-        #    for dst in data_s2d_packet_rate[src]:
-        #        procedure_logger.info("SRC {0} DST {1} COUNT {2}".format(src, dst, data_s2d_packet_rate[src][dst]))
-        #    procedure_logger.info("----")
+                try:
+                    procedure_logger.info("Beginning live capture...")
+                    start_time, end_time, duration = run_live_capture(wireless_interface, capture_file, sample_seconds)
+                    procedure_logger.info("Starting offline analysis...")
+                    data = run_offline_analysis(
+                        capture_file, start_time, end_time, duration, channel
+                    )
+                    procedure_logger.info("Analysis data: {0}".format(pprint.pformat(data)))
+                    procedure_logger.info("Writing analysis data to database...")
+                    write_offline_analysis_to_database(
+                        db_conn, data, start_time, end_time, duration
+                    )
+                    procedure_logger.info("Data written...")
+                finally:
+                    procedure_logger.info("Cleaning up capture file..")
+                    if os.path.exists(capture_file):
+                        os.unlink(capture_file)
+            if not run_forever:
+                rounds -= 1
+                current_round += 1
     except BaseException:
         procedure_logger.exception("Unhandled exception during capture! Aborting,...")
         raise

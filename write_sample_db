@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -eu
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+SCHEMA_FILE="$DIR/wifiology_client_poc/sql/schema.sql"
+
+sqlite3 "${1:-empty.db}" < ${SCHEMA_FILE}
