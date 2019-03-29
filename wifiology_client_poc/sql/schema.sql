@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS measurementStationMap(
     PRIMARY KEY(mapMeasurementID, mapStationID)
 );
 
+-- write select for this one and test it
 CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
     mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID), -- can we use the same name as line 36?
     mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),

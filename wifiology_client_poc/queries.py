@@ -192,16 +192,30 @@ def select_stations_for_measurement(connection, measurement_id):
         )
         return [Station.from_row(r) for r in c.fetchall()]
 
+def select_service_sets_for_measurement(connection, measurement_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+          """
+          SELECT * FROM serviceSet as s
+          WHERE s.serviceSetID in (
+            SELECT mapServiceSetID FROM measurementServiceSetMap
+            WHERE mapMeasurementID = :measurement_id
+          )
+          """,
+          {"measurement_id": measurement_id}
+        )
+        return [ServiceSet.from_row(r) for r in c.fetchall()]
+
 
 def insert_measurement_service_set(transaction, measurement_id, network_name):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT INTO measurementStationMap(
+            INSERT INTO measurementServiceSetMap(
                mapMeasurementID, mapServiceSetID
             ) SELECT :measurementID, ss.serviceSetID
             FROM serviceSet AS ss
-            WHERE s.networkName = :network_name            
+            WHERE ss.networkName = :network_name            
             """,
             {"measurementID": measurement_id, "network_name": network_name}
         )     

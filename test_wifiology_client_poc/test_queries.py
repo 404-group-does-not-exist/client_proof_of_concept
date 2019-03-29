@@ -7,7 +7,7 @@ from wifiology_client_poc.queries import write_schema, insert_measurement, \
     insert_service_set_station, insert_station, select_all_service_sets, select_all_stations, \
     select_service_set_by_id, select_service_set_by_network_name, select_station_by_id, \
     select_station_by_mac_address, select_stations_for_service_set, insert_measurement_station, \
-    select_stations_for_measurement
+    select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set
 from wifiology_client_poc.models import Measurement, Station, ServiceSet
 
 
@@ -194,6 +194,28 @@ class QueriesUnitTest(TestCase):
         assert_that(stations).is_length(1)
         self.assert_stations_equal(new_station, stations[0])
 
+    def test_measurement_service_set(self):
+        new_measurement = Measurement.new(
+            1.0, 2.0, 0.9, 1, 20, 5, 6, {"foo": "bar"}
+        )
+        with transaction_wrapper(self.connection) as t:
+            new_measurement.measurement_id = insert_measurement(
+                t, new_measurement
+            )
+        new_service_set = ServiceSet.new(
+            "CU Boulder Wireless", {"baz": ["foo", "bar"]}
+        )
+        with transaction_wrapper(self.connection) as t:
+            new_service_set.service_set_id = insert_service_set(
+                t, new_service_set
+            )
+        with transaction_wrapper(self.connection) as t:
+            insert_measurement_service_set(t, new_measurement.measurement_id, "CU Boulder Wireless")
+
+        service_sets = select_service_sets_for_measurement(self.connection, new_measurement.measurement_id)
+        assert_that(service_sets).is_length(1)
+        self.assert_service_sets_equal(new_service_set, service_sets[0])
+        
 
     
 
