@@ -1,14 +1,15 @@
 from unittest import TestCase
 from assertpy import assert_that
 
-from wifiology_client_poc.core_sqlite import create_connection, transaction_wrapper
-from wifiology_client_poc.queries import write_schema, insert_measurement, \
+from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper
+from wifiology_node_poc.queries import write_schema, insert_measurement, \
     select_measurement_by_id, select_all_measurements, insert_service_set, \
     insert_service_set_station, insert_station, select_all_service_sets, select_all_stations, \
     select_service_set_by_id, select_service_set_by_network_name, select_station_by_id, \
     select_station_by_mac_address, select_stations_for_service_set, insert_measurement_station, \
-    select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set
-from wifiology_client_poc.models import Measurement, Station, ServiceSet
+    select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set, \
+    kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
+from wifiology_node_poc.models import Measurement, Station, ServiceSet
 
 
 class QueriesUnitTest(TestCase):
@@ -215,10 +216,31 @@ class QueriesUnitTest(TestCase):
         service_sets = select_service_sets_for_measurement(self.connection, new_measurement.measurement_id)
         assert_that(service_sets).is_length(1)
         self.assert_service_sets_equal(new_service_set, service_sets[0])
-        
 
-    
+    def test_kv_functionality(self):
+        assert_that(kv_store_get_all(self.connection)).is_empty()
+        assert_that(kv_store_get_prefix(self.connection, "")).is_empty()
 
+        with transaction_wrapper(self.connection) as t:
+            kv_store_set(t, "foo/foo", 1)
+            kv_store_set(t, "foo/bar", 2)
+            kv_store_set(t, "bar/bar", 3)
 
+        assert_that(kv_store_get_all(self.connection)).is_length(3).contains(
+            ("foo/foo", 1), ("foo/bar", 2), ("bar/bar", 3)
+        )
+        assert_that(kv_store_get_prefix(self.connection, "")).is_length(3).contains(
+            ("foo/foo", 1), ("foo/bar", 2), ("bar/bar", 3)
+        )
+        assert_that(kv_store_get_prefix(self.connection, "foo")).is_length(2).does_not_contain(
+            ("bar/bar", 3)
+        )
 
+        assert_that(kv_store_get(self.connection, "foo/foo")).is_equal_to(1)
+        assert_that(kv_store_get(self.connection, "wat/wat", "default")).is_equal_to("default")
 
+        with transaction_wrapper(self.connection) as t:
+            kv_store_del(t, "foo/foo")
+
+        assert_that(kv_store_get_all(self.connection)).is_length(2)
+        assert_that(kv_store_get(self.connection, "foo/foo")).is_none()

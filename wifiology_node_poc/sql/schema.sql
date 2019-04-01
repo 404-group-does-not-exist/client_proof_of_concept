@@ -1,6 +1,11 @@
 -- DIALECT: SQLite3
 PRAGMA foreign_keys = on;
 
+CREATE TABLE IF NOT EXISTS keyValueStore(
+    keyName TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT 'null'
+);
+
 CREATE TABLE IF NOT EXISTS measurement(
     measurementID INTEGER PRIMARY KEY,
     measurementStartTime REAL NOT NULL,
