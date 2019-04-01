@@ -1,5 +1,5 @@
-from wifiology_node_poc.queries import select_latest_channel_measurements
-from bottle import Response, json_dumps
+from wifiology_node_poc.queries import select_latest_channel_measurements, select_latest_channel_device_counts
+from bottle import Response, json_dumps, request
 
 
 class NodeAPI(object):
@@ -19,12 +19,29 @@ class NodeAPI(object):
         """
         Pull the latest measurement data for the specified channel.
         """
-        return Response(
-            body=json_dumps({
-                'data': [
-                    m.to_api_response()
-                    for m in reversed(select_latest_channel_measurements(self.db_conn, channel_num))
-                ]
-            }),
-            type='application/json'
-        )
+        try:
+            limit = int(request.query.get('limit', 250))
+            if limit < 1:
+                raise ValueError()
+        except ValueError:
+            return Response(
+                body=json_dumps({
+                    'error': 'Invalid Limit Value! Must be a positive integer.'
+                }),
+                type='application/json',
+                status=400
+            )
+        else:
+            return Response(
+                body=json_dumps({
+                    'data': [
+                        m.to_api_response()
+                        for m in reversed(select_latest_channel_measurements(self.db_conn, channel_num, limit=limit))
+                    ],
+                    'stationCountData': list(reversed(
+                        select_latest_channel_device_counts(self.db_conn, channel_num, limit=limit)
+                    ))
+                }),
+                type='application/json',
+                status=200
+            )

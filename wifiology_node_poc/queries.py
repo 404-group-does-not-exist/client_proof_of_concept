@@ -15,21 +15,21 @@ def write_schema(connection):
     connection.executescript(schema)
 
 
-#helps grab rows after a and before b
+# helps grab rows after a and before b
 def limit_offset_helper(limit, offset, order_by=None, extra_params=None):
     params = extra_params or {}
     clause = ""
 
+    if order_by is not None:
+        # NOTE; Order by should NEVER be user specified, as this would be
+        # a SQL injection vulnerability.
+        clause += " ORDER BY {0}".format(order_by)
     if limit is not None:
         clause += " LIMIT :limit"
         params['limit'] = limit
     if limit is not None and offset is not None:
         clause += " OFFSET :offset"
         params['offset'] = offset
-    if order_by is not None:
-        # NOTE; Order by should NEVER be user specified, as this would be
-        # a SQL injection vulnerability.
-        clause += " ORDER BY {0}".format(order_by)
     return clause, params
 
 
@@ -73,6 +73,7 @@ def select_all_measurements(connection, limit=None, offset=None):
 
 
 def select_latest_channel_measurements(connection, channel_num, limit=None, offset=None):
+
     clause, params = limit_offset_helper(
         limit, offset, order_by="measurementStartTime DESC",
         extra_params={"channelNum": channel_num}
@@ -86,6 +87,28 @@ def select_latest_channel_measurements(connection, channel_num, limit=None, offs
             params
         )
         return [Measurement.from_row(r) for r in c.fetchall()]
+
+
+def select_latest_channel_device_counts(connection, channel_num, limit=None, offset=None):
+    clause, params = limit_offset_helper(
+        limit, offset, order_by="m.measurementStartTime DESC",
+        extra_params={"channelNum": channel_num}
+    )
+
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT m.measurementID, m.measurementStartTime, m.measurementEndTime, 
+              m.measurementDuration, COUNT(DISTINCT map.mapStationID) AS stationCount
+            FROM measurement AS m 
+            JOIN measurementStationMap AS map
+            ON m.measurementID = map.mapMeasurementID
+            WHERE channel=:channelNum
+            GROUP BY m.measurementID
+            """ + clause,
+            params
+        )
+        return [dict(r) for r in c.fetchall()]
 
 
 def insert_station(transaction, new_radio_device):
