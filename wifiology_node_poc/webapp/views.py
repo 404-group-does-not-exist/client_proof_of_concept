@@ -65,12 +65,23 @@ CHANNEL_TEMPLATE = SimpleTemplate("""
     <canvas id="latestDataChart">
     
     </canvas>
+    <canvas id="latestStationCountDataChart">
+    
+    </canvas>
     <script>
          $(document).ready(function(){ 
+         
+             var channelNum = {{ channel_num }};
+             var apiUrl = {{! json_dumps(get_url("latest_channel_data_api", channel_num=channel_num)) }};
              renderMeasurementData(
                  "latestDataChart", 
-                 {{ channel_num }},
-                 {{! json_dumps(get_url("latest_channel_data_api", channel_num=channel_num)) }}
+                 channelNum,
+                 apiUrl
+             );
+             renderStationCount(
+                 "latestStationCountDataChart",
+                 channelNum,
+                 apiUrl
              );
          });
     </script>
@@ -138,7 +149,7 @@ class NodeViews(object):
             CHANNEL_TEMPLATE,
             title="Channel {0}".format(channel_num),
             channel_num=channel_num,
-            service_sets=select_service_sets_by_channel(self.db_conn, channel_num),
+            service_sets=[], # select_service_sets_by_channel(self.db_conn, channel_num),
             stations=select_stations_by_channel(self.db_conn, channel_num),
             mac_decoder=self.mac_decoder,
             get_url=self.app.get_url,

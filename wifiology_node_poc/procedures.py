@@ -144,6 +144,7 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
 
 def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, channel):
     counter = 0
+    weird_frame_count = 0
     frame_counter = defaultdict(int)
     ssid_data = {}
     mac_addresses = set()
@@ -190,12 +191,12 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 mac_addresses.add(binary_to_mac(frame.data_frame.dst))
             else:
                 frame_counter['other'] += 1
-
         except dpkt.dpkt.UnpackError:
             logging.warning(
                 "dpkt lacks support for some IE80211 features. This could be causing spurious decode problems.",
                 exc_info=True
             )
+            weird_frame_count += 1
         header, payload = pcap_offline_dev.next()
     pcap_offline_dev.close()
 
@@ -205,7 +206,8 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
         frame_counter.get('ctl', 0),
         frame_counter.get('data', 0),
         extra_data={
-
+            'ctl_counters': dict(ctl_counter),
+            'weird_frame_count': weird_frame_count
         }
     )
 
