@@ -1,7 +1,9 @@
-from wifiology_client_poc.core_sqlite import cursor_manager, load_raw_file
-from wifiology_client_poc.models import Measurement, ServiceSet, Station
+from wifiology_node_poc.core_sqlite import cursor_manager, load_raw_file
+from wifiology_node_poc.models import Measurement, ServiceSet, Station
 
 import os
+from bottle import json_dumps, json_loads
+
 
 SQL_FOLDER = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'sql'
@@ -12,11 +14,16 @@ def write_schema(connection):
     schema = load_raw_file("schema.sql", SQL_FOLDER)
     connection.executescript(schema)
 
-#helps grab rows after a and before b
-def limit_offset_helper(limit, offset, extra_params=None):
+
+# helps grab rows after a and before b
+def limit_offset_helper(limit, offset, order_by=None, extra_params=None):
     params = extra_params or {}
     clause = ""
 
+    if order_by is not None:
+        # NOTE; Order by should NEVER be user specified, as this would be
+        # a SQL injection vulnerability.
+        clause += " ORDER BY {0}".format(order_by)
     if limit is not None:
         clause += " LIMIT :limit"
         params['limit'] = limit
@@ -63,6 +70,45 @@ def select_all_measurements(connection, limit=None, offset=None):
     with cursor_manager(connection) as c:
         c.execute("SELECT * FROM measurement " + clause, params)
         return [Measurement.from_row(r) for r in c.fetchall()]
+
+
+def select_latest_channel_measurements(connection, channel_num, limit=None, offset=None):
+
+    clause, params = limit_offset_helper(
+        limit, offset, order_by="measurementStartTime DESC",
+        extra_params={"channelNum": channel_num}
+    )
+
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM measurement WHERE channel=:channelNum
+            """ + clause,
+            params
+        )
+        return [Measurement.from_row(r) for r in c.fetchall()]
+
+
+def select_latest_channel_device_counts(connection, channel_num, limit=None, offset=None):
+    clause, params = limit_offset_helper(
+        limit, offset, order_by="m.measurementStartTime DESC",
+        extra_params={"channelNum": channel_num}
+    )
+
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT m.measurementID, m.measurementStartTime, m.measurementEndTime, 
+              m.measurementDuration, COUNT(DISTINCT map.mapStationID) AS stationCount
+            FROM measurement AS m 
+            JOIN measurementStationMap AS map
+            ON m.measurementID = map.mapMeasurementID
+            WHERE channel=:channelNum
+            GROUP BY m.measurementID
+            """ + clause,
+            params
+        )
+        return [dict(r) for r in c.fetchall()]
 
 
 def insert_station(transaction, new_radio_device):
@@ -138,7 +184,7 @@ def insert_service_set_station(transaction, network_name, station_mac):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT INTO infrastructureStationServiceSetMap(
+            INSERT OR IGNORE INTO infrastructureStationServiceSetMap(
                mapStationID, mapServiceSetID
             ) SELECT s.stationID, ss.serviceSetID 
             FROM station AS S, serviceSet AS ss
@@ -169,7 +215,7 @@ def insert_measurement_station(transaction, measurement_id, station_mac):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT INTO measurementStationMap(
+            INSERT OR IGNORE INTO measurementStationMap(
                mapMeasurementID, mapStationID
             ) SELECT :measurementID, s.stationID 
             FROM station AS s
@@ -177,6 +223,7 @@ def insert_measurement_station(transaction, measurement_id, station_mac):
             """,
             {"measurementID": measurement_id, "stationMac": station_mac}
         )     
+
 
 def select_stations_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
@@ -191,6 +238,7 @@ def select_stations_for_measurement(connection, measurement_id):
           {"measurement_id": measurement_id}
         )
         return [Station.from_row(r) for r in c.fetchall()]
+
 
 def select_service_sets_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
@@ -211,18 +259,118 @@ def insert_measurement_service_set(transaction, measurement_id, network_name):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT INTO measurementServiceSetMap(
+            INSERT OR IGNORE INTO measurementServiceSetMap(
                mapMeasurementID, mapServiceSetID
             ) SELECT :measurementID, ss.serviceSetID
             FROM serviceSet AS ss
             WHERE ss.networkName = :network_name            
             """,
             {"measurementID": measurement_id, "network_name": network_name}
-        )     
+        )
 
 
+def select_service_sets_by_channel(connection, channel_num, limit=None, offset=None):
+    clause, params = limit_offset_helper(
+        limit, offset, extra_params={
+            'channelNum': channel_num
+        }
+    )
+
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT DISTINCT ss.* FROM serviceSet AS ss
+            JOIN measurementServiceSetMap AS map
+            ON map.mapServiceSetID = ss.serviceSetID
+            WHERE map.mapMeasurementID IN (
+              SELECT measurementID FROM measurement WHERE channel=:channelNum
+            )
+            """ + clause,
+            params
+        ),
+        return [ServiceSet.from_row(r) for r in c.fetchall()]
 
 
+def select_stations_by_channel(connection, channel_num, limit=None, offset=None):
+    clause, params = limit_offset_helper(
+        limit, offset, extra_params={
+            'channelNum': channel_num
+        }
+    )
+
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT DISTINCT s.* FROM station AS s
+            JOIN measurementStationMap AS map
+            ON map.mapStationID = s.stationID
+            WHERE map.mapMeasurementID IN (
+              SELECT measurementID FROM measurement WHERE channel=:channelNum
+            )
+            """ + clause,
+            params
+        ),
+        return [Station.from_row(r) for r in c.fetchall()]
 
 
+def kv_store_get(connection, key_name, default=None):
+    assert isinstance(key_name, str)
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT value FROM keyValueStore WHERE keyName=?
+            """,
+            (key_name,)
+        )
+        row = c.fetchone()
+        if row is None:
+            return default
+        else:
+            return json_loads(row['value'])
 
+
+def kv_store_get_prefix(connection, prefix_name, limit=None, offset=None):
+    assert isinstance(prefix_name, str)
+    clause, params = limit_offset_helper(
+        limit, offset, order_by="keyName",
+        extra_params={"prefix": prefix_name}
+    )
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT keyName, value FROM keyValueStore WHERE keyName LIKE :prefix || '%'
+            """ + clause,
+            params
+        )
+        return [(r['keyName'], json_loads(r['value'])) for r in c.fetchall()]
+
+
+def kv_store_get_all(connection, limit=None, offset=None):
+    clause, params = limit_offset_helper(
+        limit, offset, order_by="keyName"
+    )
+    with cursor_manager(connection) as c:
+        c.execute(
+            "SELECT keyName, value FROM keyValueStore" + clause,
+            params
+        )
+        return [(r['keyName'], json_loads(r['value'])) for r in c.fetchall()]
+
+
+def kv_store_set(transaction, key_name, value):
+    assert isinstance(key_name, str)
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            REPLACE INTO keyValueStore(keyName, value) VALUES(?, ?)
+            """,
+            (key_name, json_dumps(value))
+        )
+
+
+def kv_store_del(transaction, key_name):
+    assert isinstance(key_name, str)
+    with cursor_manager(transaction) as c:
+        c.execute(
+            "DELETE FROM keyValueStore WHERE keyName=?", (key_name,)
+        )

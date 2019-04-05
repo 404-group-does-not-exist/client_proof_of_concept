@@ -1,6 +1,11 @@
 -- DIALECT: SQLite3
 PRAGMA foreign_keys = on;
 
+CREATE TABLE IF NOT EXISTS keyValueStore(
+    keyName TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT 'null'
+);
+
 CREATE TABLE IF NOT EXISTS measurement(
     measurementID INTEGER PRIMARY KEY,
     measurementStartTime REAL NOT NULL,
@@ -9,7 +14,11 @@ CREATE TABLE IF NOT EXISTS measurement(
     channel INTEGER NOT NULL,
     managementFrameCount INTEGER NOT NULL,
     controlFrameCount INTEGER NOT NULL,
+    rtsFrameCount INTEGER NOT NULL,
+    ctsFrameCount INTEGER NOT NULL,
+    ackFrameCount INTEGER NOT NULL,
     dataFrameCount INTEGER NOT NULL,
+    dataThroughput INTEGER NOT NULL,
     extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -37,14 +46,28 @@ CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(
 CREATE TABLE IF NOT EXISTS measurementStationMap(
     mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID),
     mapStationID INTEGER NOT NULL REFERENCES station(stationID), -- can we use the same name as line 30?
-    PRIMARY KEY(mapMeasurementID, mapStationID)
+    PRIMARY KEY(mapMeasurementID, mapStationID),
+    managementFrameCount INTEGER NOT NULL DEFAULT 0,
+    controlFrameCount INTEGER NOT NULL DEFAULT 0,
+    rtsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ctsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ackFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataThroughput INTEGER NOT NULL DEFAULT 0
 );
 
 -- write select for this one and test it
 CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
     mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID), -- can we use the same name as line 36?
     mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
-    PRIMARY KEY(mapMeasurementID, mapServiceSetID)
+    PRIMARY KEY(mapMeasurementID, mapServiceSetID),
+    managementFrameCount INTEGER NOT NULL DEFAULT 0,
+    controlFrameCount INTEGER NOT NULL DEFAULT 0,
+    rtsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ctsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ackFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataThroughput INTEGER NOT NULL DEFAULT 0
 );
 
 

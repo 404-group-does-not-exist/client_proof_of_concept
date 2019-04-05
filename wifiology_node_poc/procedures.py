@@ -15,11 +15,14 @@ import os
 from collections import defaultdict
 
 
-from wifiology_client_poc.core_sqlite import create_connection, transaction_wrapper
-from wifiology_client_poc.queries import write_schema, insert_measurement, insert_service_set_station, \
-    insert_station, insert_service_set, select_station_by_mac_address, select_service_set_by_network_name
-from wifiology_client_poc.models import Measurement, \
+from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db
+from wifiology_node_poc.queries import write_schema, insert_measurement, insert_service_set_station, \
+    insert_station, insert_service_set, select_station_by_mac_address, \
+    select_service_set_by_network_name, insert_measurement_service_set, insert_measurement_station, \
+    kv_store_set, kv_store_get
+from wifiology_node_poc.models import Measurement, \
     Station, ServiceSet
+from wifiology_node_poc import LOG_FORMAT
 
 capture_argument_parser = argparse.ArgumentParser('wifiology_capture')
 capture_argument_parser.add_argument("interface", type=str, help="The WiFi interface to capture on.")
@@ -35,6 +38,10 @@ capture_argument_parser.add_argument(
 capture_argument_parser.add_argument(
     "-r", "--capture-rounds", default=0, type=int,
     help="The number of rounds of captures to run before exiting. 0 will run forever."
+)
+capture_argument_parser.add_argument(
+    "--ignore-non-root", action="store_true",
+    help="Ignore that the current user is not the root user."
 )
 
 procedure_logger = logging.getLogger(__name__)
@@ -63,7 +70,8 @@ def capture_argparse_args_to_kwargs(args):
         'verbose': args.verbose,
         'sample_seconds': args.sample_seconds,
         'database_loc': args.database_loc,
-        'rounds': args.capture_rounds
+        'rounds': args.capture_rounds,
+        'ignore_non_root': args.ignore_non_root
     }
 
 
@@ -73,6 +81,9 @@ def setup_logging(log_file, verbose):
         handler = logging.StreamHandler()
     else:
         handler = logging.FileHandler(log_file)
+    handler.setFormatter(
+        logging.Formatter(LOG_FORMAT)
+    )
     root_logger.addHandler(handler)
 
     if verbose:
@@ -92,30 +103,17 @@ def rate_decoder(raw_rate):
     return rates
 
 
-def setup_capture(card, start=True, ch=None):
-    """
-     sets the Card card monitor mode or returns it to managed mode
-     :param card: a Card object
-     :param start: True = set|False = reset
-     :param ch: initial ch to start on
-     :returns: the new card
-    """
-    newcard = None
-    if start:
-        if pyw.modeget(card) == 'monitor':
-            raise RuntimeError("Card is already in monitor mode")
-        newcard = pyw.devset(card, card.dev + 'mon')
-        pyw.modeset(newcard, 'monitor')
-        pyw.up(newcard)
-        if ch:
-            pyw.chset(newcard, ch, None)
+def setup_capture_card(wireless_interface):
+    procedure_logger.info("Loading card handle from interface name..")
+    card = pyw.getcard(wireless_interface)
+    if pyw.modeget(card) == 'monitor':
+        procedure_logger.info("Wireless card already in monitor mode.")
     else:
-        if pyw.modeget(card) == 'managed':
-            raise RuntimeError("Card is not in monitor mode")
-        newcard = pyw.devset(card, card.dev[:-3])
-        pyw.modeset(newcard, 'managed')
-        pyw.up(newcard)
-    return newcard
+        procedure_logger.info("Setting wireless card to monitor mode.")
+        pyw.down(card)
+        pyw.modeset(card, 'monitor')
+        pyw.up(card)
+    return card
 
 
 def run_live_capture(wireless_interface, capture_file, sample_seconds):
@@ -146,6 +144,7 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
 
 def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, channel):
     counter = 0
+    weird_frame_count = 0
     frame_counter = defaultdict(int)
     ssid_data = {}
     mac_addresses = set()
@@ -164,16 +163,19 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
             if frame_type == dpkt.ieee80211.MGMT_TYPE:
                 frame_counter['mgmt'] += 1
                 if frame_subtype == dpkt.ieee80211.M_BEACON:
-                    ssid_name = frame.ssid.data
-                    if ssid_name not in ssid_data:
-                        ssid_data[ssid_name] = {
-                            'stations': set(),
-                            'beacons': 0
-                        }
-                    ssid_data[ssid_name]['stations'].add(
-                        (binary_to_mac(frame.mgmt.src), channel)
-                    )
-                    ssid_data[ssid_name]['beacons'] += 1
+                    if hasattr(frame, 'ssid'):
+                        ssid_name = frame.ssid.data
+                        if ssid_name not in ssid_data:
+                            ssid_data[ssid_name] = {
+                                'stations': set(),
+                                'beacons': 0
+                            }
+                        ssid_data[ssid_name]['stations'].add(
+                            (binary_to_mac(frame.mgmt.src), channel)
+                        )
+                        ssid_data[ssid_name]['beacons'] += 1
+                    else:
+                        procedure_logger.warning("Weird beacon seen! Raw: {0}".format(frame.data))
 
             elif frame_type == dpkt.ieee80211.CTL_TYPE:
                 frame_counter['ctl'] += 1
@@ -189,19 +191,23 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 mac_addresses.add(binary_to_mac(frame.data_frame.dst))
             else:
                 frame_counter['other'] += 1
-
         except dpkt.dpkt.UnpackError:
             logging.warning(
                 "dpkt lacks support for some IE80211 features. This could be causing spurious decode problems.",
                 exc_info=True
             )
+            weird_frame_count += 1
         header, payload = pcap_offline_dev.next()
     pcap_offline_dev.close()
 
     measurement = Measurement.new(
-        start_time, end_time, sample_seconds, channel, frame_counter.get('mgmt', 0),
-        frame_counter.get('ctl', 0), frame_counter.get('data', 0), extra_data={
-
+        start_time, end_time, sample_seconds, channel,
+        frame_counter.get('mgmt', 0),
+        frame_counter.get('ctl', 0),
+        frame_counter.get('data', 0),
+        extra_data={
+            'ctl_counters': dict(ctl_counter),
+            'weird_frame_count': weird_frame_count
         }
     )
 
@@ -212,19 +218,18 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     service_sets = [
         ServiceSet.new(name) for name in ssid_data.keys()
     ]
+    procedure_logger.info("-----------------")
+    procedure_logger.info("Analysis performed on channel: {0}".format(channel))
+    procedure_logger.info("Service Sets seen:")
+    for service_set in service_sets:
+        procedure_logger.info("-- {0}".format(service_set.network_name))
+    procedure_logger.info("{0} unique stations seen.".format(len(stations)))
+    procedure_logger.info("-----------------")
     return measurement, stations, service_sets, ssid_data
-    # return {
-    #     'total_counter': counter,
-    #     'frame_counter': frame_counter,
-    #     'ssid_data': ssid_data,
-    #     'ctl_counters': ctl_counter,
-    #     'unique_macs': mac_addresses,
-    #     'sample_seconds': sample_seconds
-    # }
 
 
 def write_offline_analysis_to_database(db_conn, analysis_data):
-    measurement, stations, service_sets, ssid_data = analysis_data
+    measurement, stations, service_sets, servcie_sets_data = analysis_data
 
     with transaction_wrapper(db_conn) as t:
         measurement.measurement_id = insert_measurement(
@@ -236,27 +241,46 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
                 station.station_id = opt_station.station_id
             else:
                 station.station_id = insert_station(t, station)
+            insert_measurement_station(t, measurement.measurement_id, station.mac_address)
         for service_set in service_sets:
             opt_service_set = select_service_set_by_network_name(t, service_set.network_name)
             if opt_service_set:
                 service_set.service_set_id = opt_service_set.service_set_id
             else:
                 service_set.service_set_id = insert_service_set(t, service_set)
+            insert_measurement_service_set(t, measurement.measurement_id, service_set.network_name)
+        for network_name, service_set_data in servcie_sets_data.items():
+            for mac_address_data in service_set_data.get("stations", set()):
+                insert_service_set_station(t, network_name, mac_address_data[0])
+    optimize_db(db_conn)
 
 
 def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
-                verbose=False, sample_seconds=10, rounds=0):
+                verbose=False, sample_seconds=10, rounds=0, ignore_non_root=False):
     try:
+        effective_user_id = os.geteuid()
+        if effective_user_id != 0 and ignore_non_root:
+            procedure_logger.warning("Not running as root, attempting to proceed...")
+        elif effective_user_id !=0:
+            raise OSError(
+                "This script requires root-level permissions to run. "
+                "Please either run as superuser or use the --ignore-non-root flag."
+            )
+
         setup_logging(log_file, verbose)
 
         run_forever = rounds == 0
 
-
         db_conn = create_connection(database_loc)
         write_schema(db_conn)
 
-        procedure_logger.info("Loading card handle from interface name..")
-        card = pyw.getcard(wireless_interface)
+        with transaction_wrapper(db_conn) as t:
+            kv_store_set(t, "capture/script_start_time", time.time())
+            kv_store_set(t, 'capture/script_pid', os.getpid())
+            kv_store_set(t, "capture/interface", wireless_interface)
+            kv_store_set(t, "capture/sample_seconds", sample_seconds)
+
+        card = setup_capture_card(wireless_interface)
 
         if not os.path.exists(tmp_dir):
             procedure_logger.warning("Tmp dir {0} does not exist. Creating...".format(tmp_dir))
@@ -267,6 +291,8 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
         current_round = 0
         while run_forever or rounds > 0:
             procedure_logger.info("Executing capture round {0}".format(current_round))
+            with transaction_wrapper(db_conn) as t:
+                kv_store_set(t, "capture/current_script_round", current_round)
             for channel in range(1, 12):
                 procedure_logger.info("Changing to channel {0}".format(channel))
 
@@ -283,10 +309,9 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
                     data = run_offline_analysis(
                         capture_file, start_time, end_time, duration, channel
                     )
-                    procedure_logger.info("Analysis data: {0}".format(pprint.pformat(data)))
                     procedure_logger.info("Writing analysis data to database...")
                     write_offline_analysis_to_database(
-                        db_conn, data, start_time, end_time, duration
+                        db_conn, data
                     )
                     procedure_logger.info("Data written...")
                 finally:
@@ -295,7 +320,7 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
                         os.unlink(capture_file)
             if not run_forever:
                 rounds -= 1
-                current_round += 1
+            current_round += 1
     except BaseException:
         procedure_logger.exception("Unhandled exception during capture! Aborting,...")
         raise
