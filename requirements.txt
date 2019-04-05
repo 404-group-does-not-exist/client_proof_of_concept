@@ -4,3 +4,5 @@ dpkt
 pyric
 bottle
 assertpy
+manuf
+eventlet

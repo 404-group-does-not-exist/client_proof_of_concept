@@ -55,6 +55,14 @@ class Measurement(RecordObject):
         self.data_frame_count = data_frame_count
         self.extra_data = extra_data
 
+    def __repr__(self):
+        return "Measurement(measurementID={id}, startTime={st}, endTime={et}, duration={d}, channel={c}, " \
+               "managementFrameCount={mfc}, controlFrameCount={cfc}, dataFrameCount={dfc})".format(
+                id=self.measurement_id, st=self.measurement_start_time, et=self.measurement_end_time,
+                d=self.measurement_duration, c=self.channel, mfc=self.management_frame_count,
+                cfc=self.control_frame_count, dfc=self.data_frame_count
+               )
+
     @classmethod
     def from_row(cls, row, prefix=""):
         if row is None:
@@ -120,6 +128,9 @@ class Station(RecordObject):
         self.mac_address = mac_address
         self.extra_data = extra_data
 
+    def __repr__(self):
+        return "Station(stationID={0}, macAddress={1})".format(self.station_id, self.mac_address)
+
     @classmethod
     def from_row(cls, row, prefix=""):
         if row is None:
@@ -157,6 +168,9 @@ class ServiceSet(RecordObject):
         self.service_set_id = service_set_id
         self.network_name = network_name
         self.extra_data = extra_data
+
+    def __repr__(self):
+        return "ServiceSet(serviceSetID={0}, networkName={1})".format(self.service_set_id, self.network_name)
 
     @classmethod
     def from_row(cls, row, prefix=""):
