@@ -21,7 +21,7 @@ from wifiology_node_poc.queries import write_schema, insert_measurement, insert_
     select_service_set_by_network_name, insert_measurement_service_set, insert_measurement_station, \
     kv_store_set, kv_store_get
 from wifiology_node_poc.models import Measurement, \
-    Station, ServiceSet
+    Station, ServiceSet, FrameCounts
 from wifiology_node_poc import LOG_FORMAT
 
 capture_argument_parser = argparse.ArgumentParser('wifiology_capture')
@@ -206,7 +206,6 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
         frame_counter.get('ctl', 0),
         frame_counter.get('data', 0),
         extra_data={
-            'ctl_counters': dict(ctl_counter),
             'weird_frame_count': weird_frame_count
         }
     )
