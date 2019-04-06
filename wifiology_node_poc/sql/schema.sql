@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS measurement(
     channel INTEGER NOT NULL,
     managementFrameCount INTEGER NOT NULL,
     controlFrameCount INTEGER NOT NULL,
+    rtsFrameCount INTEGER NOT NULL,
+    ctsFrameCount INTEGER NOT NULL,
+    ackFrameCount INTEGER NOT NULL,
     dataFrameCount INTEGER NOT NULL,
+    dataThroughput INTEGER NOT NULL,
     extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -42,6 +46,13 @@ CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(
 CREATE TABLE IF NOT EXISTS measurementStationMap(
     mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID),
     mapStationID INTEGER NOT NULL REFERENCES station(stationID), -- can we use the same name as line 30?
+    managementFrameCount INTEGER NOT NULL DEFAULT 0,
+    controlFrameCount INTEGER NOT NULL DEFAULT 0,
+    rtsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ctsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ackFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataThroughput INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(mapMeasurementID, mapStationID)
 );
 
@@ -49,6 +60,13 @@ CREATE TABLE IF NOT EXISTS measurementStationMap(
 CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
     mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID), -- can we use the same name as line 36?
     mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
+    managementFrameCount INTEGER NOT NULL DEFAULT 0,
+    controlFrameCount INTEGER NOT NULL DEFAULT 0,
+    rtsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ctsFrameCount INTEGER NOT NULL DEFAULT 0,
+    ackFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataFrameCount INTEGER NOT NULL DEFAULT 0,
+    dataThroughput INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(mapMeasurementID, mapServiceSetID)
 );
 

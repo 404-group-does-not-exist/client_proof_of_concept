@@ -40,11 +40,15 @@ def insert_measurement(transaction, new_measurement):
             INSERT INTO measurement(
                measurementStartTime, measurementEndTime, 
                measurementDuration, channel, managementFrameCount,
-               controlFrameCount, dataFrameCount, extraJSONData
+               controlFrameCount, rtsFrameCount, ctsFrameCount,
+               ackFrameCount, dataFrameCount, dataThroughput,
+               extraJSONData
             ) VALUES (
                :measurementStartTime, :measurementEndTime,
                :measurementDuration, :channel, :managementFrameCount,
-               :controlFrameCount, :dataFrameCount, :extraJSONData
+               :controlFrameCount, :rtsFrameCount, :ctsFrameCount,
+               :ackFrameCount, :dataFrameCount, :dataThroughput,
+               :extraJSONData
             )
             
             """,

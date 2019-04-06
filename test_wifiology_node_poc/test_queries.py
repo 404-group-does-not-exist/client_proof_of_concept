@@ -9,7 +9,7 @@ from wifiology_node_poc.queries import write_schema, insert_measurement, \
     select_station_by_mac_address, select_stations_for_service_set, insert_measurement_station, \
     select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set, \
     kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
-from wifiology_node_poc.models import Measurement, Station, ServiceSet
+from wifiology_node_poc.models import Measurement, Station, ServiceSet, FrameCounts
 
 
 class QueriesUnitTest(TestCase):
@@ -22,7 +22,19 @@ class QueriesUnitTest(TestCase):
         self.connection = None
 
     @staticmethod
-    def assert_measurements_equal(left, right):
+    def assert_frame_counts_equal(left, right):
+        assert_that(left).is_instance_of(FrameCounts)
+        assert_that(right).is_instance_of(FrameCounts)
+        assert_that(right.management_frame_count).is_equal_to(left.management_frame_count)
+        assert_that(right.control_frame_count).is_equal_to(left.control_frame_count)
+        assert_that(right.rts_frame_count).is_equal_to(left.rts_frame_count)
+        assert_that(right.cts_frame_count).is_equal_to(left.cts_frame_count)
+        assert_that(right.ack_frame_count).is_equal_to(left.ack_frame_count)
+        assert_that(right.data_frame_count).is_equal_to(left.data_frame_count)
+        assert_that(right.data_throughput).is_equal_to(left.data_throughput)
+
+    @classmethod
+    def assert_measurements_equal(cls, left, right):
         assert_that(left).is_instance_of(Measurement)
         assert_that(right).is_instance_of(Measurement)
         assert_that(left.measurement_id).is_equal_to(right.measurement_id)
@@ -30,9 +42,7 @@ class QueriesUnitTest(TestCase):
         assert_that(left.measurement_end_time).is_equal_to(right.measurement_end_time)
         assert_that(left.measurement_duration).is_equal_to(right.measurement_duration)
         assert_that(left.channel).is_equal_to(right.channel)
-        assert_that(left.management_frame_count).is_equal_to(right.management_frame_count)
-        assert_that(left.control_frame_count).is_equal_to(right.control_frame_count)
-        assert_that(left.data_frame_count).is_equal_to(right.data_frame_count)
+        cls.assert_frame_counts_equal(left.frame_counts, right.frame_counts)
         assert_that(left.extra_data).is_equal_to(right.extra_data)
 
     @staticmethod
@@ -53,8 +63,13 @@ class QueriesUnitTest(TestCase):
 
     def test_measurement_crud(self):
         new_measurement = Measurement.new(
-            1.0, 2.0, 0.9, 1, 20, 5, 6, {"foo": "bar"}
+            1.0, 2.0, 0.9, 1, 
+            FrameCounts(
+                1, 2, 3, 4, 5, 6, 7
+            ),
+            {"foo": "bar"}
         )
+        
 
         with transaction_wrapper(self.connection) as t:
             new_measurement.measurement_id = insert_measurement(
@@ -73,7 +88,11 @@ class QueriesUnitTest(TestCase):
         )
 
         new_measurement_2 = Measurement.new(
-            3.0, 4.0, 0.8, 2, 100, 25, 1, {"baz": "bar"}
+            3.0, 4.0, 0.8, 2,
+            FrameCounts(
+                7, 6, 5, 4, 3, 2, 1
+            ),
+            {"baz": "bar"}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -177,7 +196,11 @@ class QueriesUnitTest(TestCase):
 
     def test_measurement_station_map(self):
         new_measurement = Measurement.new(
-            1.0, 2.0, 0.9, 1, 20, 5, 6, {"foo": "bar"}
+            1.0, 2.0, 0.9, 1, 
+            FrameCounts(
+                1, 2, 3, 4, 5, 6, 7
+            ),
+            {"foo": "bar"}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -197,7 +220,11 @@ class QueriesUnitTest(TestCase):
 
     def test_measurement_service_set(self):
         new_measurement = Measurement.new(
-            1.0, 2.0, 0.9, 1, 20, 5, 6, {"foo": "bar"}
+            1.0, 2.0, 0.9, 1, 
+            FrameCounts(
+                1, 2, 3, 4, 5, 6, 7
+            ),
+            {"foo": "bar"}
         )
         with transaction_wrapper(self.connection) as t:
             new_measurement.measurement_id = insert_measurement(
