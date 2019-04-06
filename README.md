@@ -1,4 +1,8 @@
 # Wifiology Client Proof of Concept
+## Current Status
+
+* Build Status: [![Build Status](https://travis-ci.org/404-group-does-not-exist/client_proof_of_concept.svg?branch=master)](https://travis-ci.org/404-group-does-not-exist/client_proof_of_concept) 
+
 ## Background
 
 
