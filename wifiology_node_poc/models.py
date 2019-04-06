@@ -56,8 +56,8 @@ class Measurement(RecordObject):
     def __repr__(self):
         return "Measurement(measurementID={id}, startTime={st}, endTime={et}, duration={d}, channel={c}, " \
                "frameCounts={fc})".format(
-                id=self.measurement_id, st=self.measurement_start_time, et=self.measurement_end_time,
-                d=self.measurement_duration, c=self.channel, fc=repr(self.frame_counts)
+                    id=self.measurement_id, st=self.measurement_start_time, et=self.measurement_end_time,
+                    d=self.measurement_duration, c=self.channel, fc=repr(self.frame_counts)
                )
 
     @classmethod
