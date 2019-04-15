@@ -2,6 +2,11 @@
 set -eu
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-SCHEMA_FILE="$DIR/wifiology_client_poc/sql/schema.sql"
+SCHEMA_FILE="$DIR/wifiology_node_poc/sql/schema.sql"
+TARGET_DB="${1:-${DIR}/empty.db}"
 
-sqlite3 "${1:-empty.db}" < ${SCHEMA_FILE}
+if [ -e "${TARGET_DB}" ]; then
+    rm "${TARGET_DB}"
+fi
+
+sqlite3 "${TARGET_DB}" < ${SCHEMA_FILE}
