@@ -1,4 +1,5 @@
 import os
+import math
 from contextlib import contextmanager
 from functools import wraps
 from sqlite3 import dbapi2 as sqlite
@@ -14,6 +15,40 @@ def immediate_transaction_wrapper(connection):
         raise
     else:
         connection.commit()
+
+
+class WeightedAverage(object):
+    def __init__(self):
+        self.running_sum = 0.0
+        self.running_weight = 0.0
+
+    def step(self, avg, weight):
+        if avg is not None and weight is not None:
+            self.running_sum += avg*weight*1.0
+            self.running_weight += weight
+
+    def finalize(self):
+        if self.running_weight > 0.0:
+            return self.running_sum / self.running_weight
+        else:
+            return None
+
+
+class WeightedStdDev(object):
+    def __init__(self):
+        self.running_variance = 0.0
+        self.running_weight = 0.0
+
+    def step(self, std_dev, weight):
+        if std_dev is not None and weight is not None:
+            self.running_variance += (std_dev * std_dev * weight * 1.0)
+            self.running_weight += weight
+
+    def finalize(self):
+        if self.running_weight > 0.0:
+            return math.sqrt(self.running_variance / self.running_weight)
+        else:
+            return None
 
 
 @contextmanager
@@ -56,6 +91,8 @@ def vacuum_db(connection):
 def create_connection(*args, **kwargs):
     conn = sqlite.connect(*args, **kwargs)
     conn.row_factory = sqlite.Row
+    conn.create_aggregate("weighted_avg", 2, WeightedAverage)
+    conn.create_aggregate("weighted_std_dev", 2, WeightedStdDev)
     return conn
 
 

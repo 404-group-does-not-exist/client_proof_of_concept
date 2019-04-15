@@ -4,12 +4,12 @@ from assertpy import assert_that
 from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper
 from wifiology_node_poc.queries import write_schema, insert_measurement, \
     select_measurement_by_id, select_all_measurements, insert_service_set, \
-    insert_service_set_station, insert_station, select_all_service_sets, select_all_stations, \
+    insert_service_set_infrastructure_station, insert_station, select_all_service_sets, select_all_stations, \
     select_service_set_by_id, select_service_set_by_network_name, select_station_by_id, \
-    select_station_by_mac_address, select_stations_for_service_set, insert_measurement_station, \
+    select_station_by_mac_address, select_infrastructure_stations_for_service_set, insert_measurement_station, \
     select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set, \
     kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
-from wifiology_node_poc.models import Measurement, Station, ServiceSet, FrameCounts
+from wifiology_node_poc.models import Measurement, Station, ServiceSet, DataCounters
 
 
 class QueriesUnitTest(TestCase):
@@ -23,8 +23,8 @@ class QueriesUnitTest(TestCase):
 
     @staticmethod
     def assert_frame_counts_equal(left, right):
-        assert_that(left).is_instance_of(FrameCounts)
-        assert_that(right).is_instance_of(FrameCounts)
+        assert_that(left).is_instance_of(DataCounters)
+        assert_that(right).is_instance_of(DataCounters)
         assert_that(right.management_frame_count).is_equal_to(left.management_frame_count)
         assert_that(right.control_frame_count).is_equal_to(left.control_frame_count)
         assert_that(right.rts_frame_count).is_equal_to(left.rts_frame_count)
@@ -64,7 +64,7 @@ class QueriesUnitTest(TestCase):
     def test_measurement_crud(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
-            FrameCounts(
+            DataCounters(
                 1, 2, 3, 4, 5, 6, 7
             ),
             {"foo": "bar"}
@@ -89,7 +89,7 @@ class QueriesUnitTest(TestCase):
 
         new_measurement_2 = Measurement.new(
             3.0, 4.0, 0.8, 2,
-            FrameCounts(
+            DataCounters(
                 7, 6, 5, 4, 3, 2, 1
             ),
             {"baz": "bar"}
@@ -179,13 +179,13 @@ class QueriesUnitTest(TestCase):
             new_station.station_id = insert_station(
                 t, new_station
             )
-            insert_service_set_station(
+            insert_service_set_infrastructure_station(
                 t,
                 new_service_set.network_name,
                 new_station.mac_address
             )
 
-        associated_stations = select_stations_for_service_set(
+        associated_stations = select_infrastructure_stations_for_service_set(
             self.connection, new_service_set.service_set_id
         )
         assert_that(associated_stations).is_length(1)
@@ -197,7 +197,7 @@ class QueriesUnitTest(TestCase):
     def test_measurement_station_map(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
-            FrameCounts(
+            DataCounters(
                 1, 2, 3, 4, 5, 6, 7
             ),
             {"foo": "bar"}
@@ -221,7 +221,7 @@ class QueriesUnitTest(TestCase):
     def test_measurement_service_set(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
-            FrameCounts(
+            DataCounters(
                 1, 2, 3, 4, 5, 6, 7
             ),
             {"foo": "bar"}

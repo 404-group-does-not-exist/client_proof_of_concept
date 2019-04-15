@@ -1,4 +1,4 @@
-from wifiology_node_poc.queries import select_latest_channel_measurements, select_latest_channel_device_counts
+from wifiology_node_poc.queries.core import select_latest_channel_measurements, select_latest_channel_device_counts
 from bottle import Response, json_dumps, request
 
 

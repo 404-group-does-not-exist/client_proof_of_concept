@@ -5,7 +5,8 @@ from manuf import manuf
 
 from wifiology_node_poc.procedures import setup_logging
 from wifiology_node_poc.core_sqlite import create_connection
-from wifiology_node_poc.queries import write_schema
+from wifiology_node_poc.queries.core import write_schema
+from wifiology_node_poc.webapp import VIEWS_DIR
 from wifiology_node_poc.webapp.views import NodeViews
 from wifiology_node_poc.webapp.api import NodeAPI
 
@@ -42,6 +43,7 @@ def create_webapp(database_loc, log_file="-", verbose=False):
     setup_logging(log_file, verbose)
 
     parser = manuf.MacParser(update=True)
+    bottle.TEMPLATE_PATH.append(VIEWS_DIR)
 
     def pretty_print_mac_info(mac):
         info = parser.get_all(mac)
