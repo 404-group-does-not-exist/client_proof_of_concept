@@ -83,7 +83,7 @@ class Measurement(RecordObject):
                )
 
     @classmethod
-    def from_row(cls, row, prefix=""):
+    def from_row(cls, row, prefix="", data_counters=None):
         if row is None:
             return None
         else:
@@ -96,7 +96,7 @@ class Measurement(RecordObject):
                 row[prefix + "averageNoise"],
                 row[prefix + "stdDevNoise"],
                 cls._json_loads(row[prefix + "extraJSONData"]),
-                data_counters=DataCounters.from_row(row, prefix=prefix)
+                data_counters=data_counters
             )
 
     @classmethod
@@ -327,7 +327,7 @@ DataCounters(
             return cls(
                 row[prefix + "managementFrameCount"],
                 row[prefix + "associationFrameCount"],
-                row[prefix + "reassocationFrameCount"],
+                row[prefix + "reassociationFrameCount"],
                 row[prefix + "disassociationFrameCount"],
                 row[prefix + "controlFrameCount"],
                 row[prefix + "rtsFrameCount"],

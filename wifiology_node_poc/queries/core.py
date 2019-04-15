@@ -1,5 +1,5 @@
 from wifiology_node_poc.core_sqlite import cursor_manager, load_raw_file
-from wifiology_node_poc.models import ServiceSet, Station, Measurement
+from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters
 from wifiology_node_poc.queries import limit_offset_helper, SQL_FOLDER, place_holder_generator
 
 
@@ -78,19 +78,42 @@ def select_infrastructure_stations_for_service_set(connection, service_set_id):
         return [Station.from_row(r) for r in c.fetchall()]
 
 
-def insert_measurement_station(transaction, measurement_id, station_id, frame_counts):
+def select_associated_stations_for_service_set(connection, service_set_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT s.* FROM station AS s
+            WHERE s.stationID IN (
+              SELECT associatedStationID FROM associationStationServiceSetMap AS m
+              JOIN serviceSet AS ss ON ss.serviceSetID = m.associatedServiceSetID
+              WHERE serviceSetID = :serviceSetID
+            )
+            """,
+            {"serviceSetID": service_set_id}
+        )
+        return [Station.from_row(r) for r in c.fetchall()]
+
+
+def insert_measurement_station(transaction, measurement_id, station_id, data_counters):
     params = {"measurementID": measurement_id, "stationID": station_id}
-    params.update(frame_counts.to_row())
+    params.update(data_counters.to_row())
     with cursor_manager(transaction) as c:
         c.execute(
             """
             INSERT INTO measurementStationMap(
                mapMeasurementID, mapStationID, managementFrameCount,
+               associationFrameCount, reassociationFrameCount, disassociationFrameCount,
                controlFrameCount, rtsFrameCount, ctsFrameCount,
-               ackFrameCount, dataFrameCount, dataThroughputIn, dataThroughputOut
-            ) VALUES (:measurementID, :stationID, :managementFrameCount, :controlFrameCount, 
-               :rtsFrameCount, :ctsFrameCount, :ackFrameCount, :dataFrameCount, 
-               :dataThroughputIn, :dataThroughputOut
+               ackFrameCount, dataFrameCount, dataThroughputIn, dataThroughputOut,
+               retryFrameCount, averagePower, stdDevPower, lowestRate, highestRate,
+               failedFCSCount
+            ) VALUES (
+               :measurementID, :stationID, :managementFrameCount, 
+               :associationFrameCount, :reassociationFrameCount, :disassociationFrameCount,
+               :controlFrameCount,  :rtsFrameCount, :ctsFrameCount, :ackFrameCount, 
+               :dataFrameCount, :dataThroughputIn, :dataThroughputOut,
+               :retryFrameCount, :averagePower, :stdDevPower, :lowestRate, :highestRate,
+               :failedFCSCount
             )         
             """,
             params
@@ -101,15 +124,19 @@ def select_stations_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
         c.execute(
           """
-          SELECT * FROM station as s
-          WHERE s.stationID in (
-            SELECT mapStationID FROM measurementStationMap
-            WHERE mapMeasurementID = :measurement_id
-          )
+          SELECT s.stationID, s.macAddress, s.extraJSONData, 
+            map.* 
+          FROM measurementStationMap AS map
+          JOIN station AS s ON s.stationID = map.mapStationID
+          WHERE mapMeasurementID = :measurement_id
           """,
           {"measurement_id": measurement_id}
         )
-        return [Station.from_row(r) for r in c.fetchall()]
+
+        return [
+            (Station.from_row(r), DataCounters.from_row(r))
+            for r in c.fetchall()
+        ]
 
 
 def insert_measurement_service_set(transaction, measurement_id, service_set_id):
