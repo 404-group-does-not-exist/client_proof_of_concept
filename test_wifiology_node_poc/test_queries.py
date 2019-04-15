@@ -2,13 +2,16 @@ from unittest import TestCase
 from assertpy import assert_that
 
 from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper
-from wifiology_node_poc.queries import write_schema, insert_measurement, \
+from wifiology_node_poc.queries.core import write_schema, insert_measurement, \
     select_measurement_by_id, select_all_measurements, insert_service_set, \
     insert_service_set_infrastructure_station, insert_station, select_all_service_sets, select_all_stations, \
-    select_service_set_by_id, select_service_set_by_network_name, select_station_by_id, \
+    select_service_set_by_id, select_station_by_id, select_service_set_by_bssid, \
     select_station_by_mac_address, select_infrastructure_stations_for_service_set, insert_measurement_station, \
-    select_stations_for_measurement, select_service_sets_for_measurement, insert_measurement_service_set, \
-    kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
+    select_stations_for_measurement, select_service_sets_for_measurement, \
+    insert_measurement_service_set, insert_service_set_associated_station, \
+    select_associated_stations_for_service_set
+
+from wifiology_node_poc.queries.kv import kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
 from wifiology_node_poc.models import Measurement, Station, ServiceSet, DataCounters
 
 
@@ -22,19 +25,33 @@ class QueriesUnitTest(TestCase):
         self.connection = None
 
     @staticmethod
-    def assert_frame_counts_equal(left, right):
+    def assert_data_counters_equal(left, right):
         assert_that(left).is_instance_of(DataCounters)
         assert_that(right).is_instance_of(DataCounters)
         assert_that(right.management_frame_count).is_equal_to(left.management_frame_count)
         assert_that(right.control_frame_count).is_equal_to(left.control_frame_count)
+        assert_that(right.data_frame_count).is_equal_to(left.data_frame_count)
+
+        assert_that(right.association_frame_count).is_equal_to(left.association_frame_count)
+        assert_that(right.reassociation_frame_count).is_equal_to(left.reassociation_frame_count)
+        assert_that(right.disassociation_frame_count).is_equal_to(left.disassociation_frame_count)
+
         assert_that(right.rts_frame_count).is_equal_to(left.rts_frame_count)
         assert_that(right.cts_frame_count).is_equal_to(left.cts_frame_count)
         assert_that(right.ack_frame_count).is_equal_to(left.ack_frame_count)
-        assert_that(right.data_frame_count).is_equal_to(left.data_frame_count)
-        assert_that(right.data_throughput).is_equal_to(left.data_throughput)
+
+        assert_that(right.data_throughput_in).is_equal_to(left.data_throughput_in)
+        assert_that(right.data_throughput_out).is_equal_to(left.data_throughput_out)
+        assert_that(right.retry_frame_count).is_equal_to(left.retry_frame_count)
+
+        assert_that(right.average_power).is_equal_to(left.average_power)
+        assert_that(right.std_dev_power).is_equal_to(left.std_dev_power)
+
+        assert_that(right.lowest_rate).is_equal_to(left.lowest_rate)
+        assert_that(right.highest_rate).is_equal_to(left.highest_rate)
 
     @classmethod
-    def assert_measurements_equal(cls, left, right):
+    def assert_measurements_equal(cls, left, right, check_data_counters=False):
         assert_that(left).is_instance_of(Measurement)
         assert_that(right).is_instance_of(Measurement)
         assert_that(left.measurement_id).is_equal_to(right.measurement_id)
@@ -42,8 +59,10 @@ class QueriesUnitTest(TestCase):
         assert_that(left.measurement_end_time).is_equal_to(right.measurement_end_time)
         assert_that(left.measurement_duration).is_equal_to(right.measurement_duration)
         assert_that(left.channel).is_equal_to(right.channel)
-        cls.assert_frame_counts_equal(left.frame_counts, right.frame_counts)
         assert_that(left.extra_data).is_equal_to(right.extra_data)
+
+        if check_data_counters:
+            cls.assert_data_counters_equal(left.data_counters, right.data_counters)
 
     @staticmethod
     def assert_stations_equal(left, right):
@@ -63,13 +82,9 @@ class QueriesUnitTest(TestCase):
 
     def test_measurement_crud(self):
         new_measurement = Measurement.new(
-            1.0, 2.0, 0.9, 1, 
-            DataCounters(
-                1, 2, 3, 4, 5, 6, 7
-            ),
+            1.0, 2.0, 0.9, 1, [],
             {"foo": "bar"}
         )
-        
 
         with transaction_wrapper(self.connection) as t:
             new_measurement.measurement_id = insert_measurement(
@@ -89,9 +104,7 @@ class QueriesUnitTest(TestCase):
 
         new_measurement_2 = Measurement.new(
             3.0, 4.0, 0.8, 2,
-            DataCounters(
-                7, 6, 5, 4, 3, 2, 1
-            ),
+            [],
             {"baz": "bar"}
         )
 
@@ -138,7 +151,7 @@ class QueriesUnitTest(TestCase):
 
     def test_service_set_crud(self):
         new_service_set = ServiceSet.new(
-            "CU Boulder Wireless", {"baz": ["foo", "bar"]}
+            "00:A0:C9:00:00:00", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -152,7 +165,7 @@ class QueriesUnitTest(TestCase):
         )
         self.assert_service_sets_equal(
             new_service_set,
-            select_service_set_by_network_name(self.connection, new_service_set.network_name)
+            select_service_set_by_bssid(self.connection, new_service_set.bssid)
         )
 
         service_sets = select_all_service_sets(
@@ -166,10 +179,14 @@ class QueriesUnitTest(TestCase):
 
     def test_station_service_set_linking(self):
         new_service_set = ServiceSet.new(
-            "CU Boulder Wireless", {"baz": ["foo", "bar"]}
+             "00:A0:C9:00:00:00", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
         )
         new_station = Station.new(
             "01:02:03:04:05:06", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
+        )
+
+        new_station_2 = Station.new(
+            "01:02:03:04:05:07", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -179,27 +196,41 @@ class QueriesUnitTest(TestCase):
             new_station.station_id = insert_station(
                 t, new_station
             )
+            new_station_2.station_id = insert_station(
+                t, new_station_2
+            )
             insert_service_set_infrastructure_station(
                 t,
-                new_service_set.network_name,
+                new_service_set.bssid,
                 new_station.mac_address
             )
+            insert_service_set_associated_station(
+                t,
+                new_service_set.bssid,
+                new_station_2.mac_address
+            )
 
-        associated_stations = select_infrastructure_stations_for_service_set(
+        infra_stations = select_infrastructure_stations_for_service_set(
+            self.connection, new_service_set.service_set_id
+        )
+        assert_that(infra_stations).is_length(1)
+
+        self.assert_stations_equal(
+            new_station, infra_stations[0]
+        )
+
+        associated_stations = select_associated_stations_for_service_set(
             self.connection, new_service_set.service_set_id
         )
         assert_that(associated_stations).is_length(1)
-
         self.assert_stations_equal(
-            new_station, associated_stations[0]
+            new_station_2, associated_stations[0]
         )
 
     def test_measurement_station_map(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
-            DataCounters(
-                1, 2, 3, 4, 5, 6, 7
-            ),
+            [],
             {"foo": "bar"}
         )
 
@@ -210,20 +241,37 @@ class QueriesUnitTest(TestCase):
         new_station = Station.new(
             "01:02:03:04:05:06", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
         )
+        new_station_2 = Station.new(
+            "01:02:03:04:05:07", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
+        )
         with transaction_wrapper(self.connection) as t:
             new_station.station_id = insert_station(t, new_station)
+            new_station_2.station_id = insert_station(t, new_station_2)
+        my_counter = DataCounters(
+            9, 2, 3,
+            4, 9, 3, 3,
+            3, 10, 2000, 1500,
+            1, power_measurements=[1.0, 2.0, 3.0],
+            rate_measurements=[1, 2, 1, 4]
+        )
         with transaction_wrapper(self.connection) as t:
-            insert_measurement_station(t, new_measurement.measurement_id, new_station.mac_address)
+            insert_measurement_station(
+                t, new_measurement.measurement_id, new_station.station_id, DataCounters.zero()
+            )
+            insert_measurement_station(
+                t, new_measurement.measurement_id, new_station_2.station_id, my_counter
+            )
         stations = select_stations_for_measurement(self.connection, new_measurement.measurement_id)
-        assert_that(stations).is_length(1)
-        self.assert_stations_equal(new_station, stations[0])
+        assert_that(stations).is_length(2)
+        self.assert_stations_equal(new_station, stations[0][0])
+        self.assert_data_counters_equal(DataCounters.zero(), stations[0][1])
+        self.assert_stations_equal(new_station_2, stations[1][0])
+        self.assert_data_counters_equal(my_counter, stations[1][1])
 
     def test_measurement_service_set(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
-            DataCounters(
-                1, 2, 3, 4, 5, 6, 7
-            ),
+            [],
             {"foo": "bar"}
         )
         with transaction_wrapper(self.connection) as t:
@@ -231,14 +279,14 @@ class QueriesUnitTest(TestCase):
                 t, new_measurement
             )
         new_service_set = ServiceSet.new(
-            "CU Boulder Wireless", {"baz": ["foo", "bar"]}
+            "00:01:00:00:01:00", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
         )
         with transaction_wrapper(self.connection) as t:
             new_service_set.service_set_id = insert_service_set(
                 t, new_service_set
             )
         with transaction_wrapper(self.connection) as t:
-            insert_measurement_service_set(t, new_measurement.measurement_id, "CU Boulder Wireless")
+            insert_measurement_service_set(t, new_measurement.measurement_id, new_service_set.service_set_id)
 
         service_sets = select_service_sets_for_measurement(self.connection, new_measurement.measurement_id)
         assert_that(service_sets).is_length(1)
