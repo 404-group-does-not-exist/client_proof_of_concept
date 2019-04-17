@@ -22,6 +22,14 @@ def altered_stddev(data):
         return statistics.stdev(data)
 
 
+def bytes_to_str(b):
+    if isinstance(b, (bytes, bytearray)):
+        result = repr(b)[2:-1]
+    else:
+        result = b
+    return result
+
+
 class RecordObject(object):
     """
     All record types that match rows in the database must provides methods for:
@@ -64,7 +72,7 @@ class RecordObject(object):
 
 class Measurement(RecordObject):
     def __init__(self, measurement_id, measurement_start_time, measurement_end_time, measurement_duration,
-                 channel, average_noise, std_dev_noise, extra_data, data_counters=None):
+                 channel, average_noise, std_dev_noise, has_been_uploaded, extra_data, data_counters=None):
         self.measurement_id = measurement_id
         self.measurement_start_time = measurement_start_time
         self.measurement_end_time = measurement_end_time
@@ -72,6 +80,7 @@ class Measurement(RecordObject):
         self.channel = channel
         self.average_noise = average_noise
         self.std_dev_noise = std_dev_noise
+        self.has_been_uploaded = has_been_uploaded
         self.extra_data = extra_data
         self.data_counters = data_counters
 
@@ -95,12 +104,14 @@ class Measurement(RecordObject):
                 row[prefix + "channel"],
                 row[prefix + "averageNoise"],
                 row[prefix + "stdDevNoise"],
+                row[prefix + "hasBeenUploaded"],
                 cls._json_loads(row[prefix + "extraJSONData"]),
                 data_counters=data_counters
             )
 
     @classmethod
-    def new(cls, start_time, end_time, duration, channel, noise_measurements, extra_data=None, data_counters=None):
+    def new(cls, start_time, end_time, duration, channel, noise_measurements, has_been_uploaded=False,
+            extra_data=None, data_counters=None):
         return cls(
             None,
             start_time,
@@ -109,6 +120,7 @@ class Measurement(RecordObject):
             channel,
             altered_mean(noise_measurements),
             altered_stddev(noise_measurements),
+            has_been_uploaded,
             extra_data or {},
             data_counters=data_counters
         )
@@ -122,6 +134,7 @@ class Measurement(RecordObject):
             prefix + 'channel': self.channel,
             prefix + 'averageNoise': self.average_noise,
             prefix + 'stdDevNoise': self.std_dev_noise,
+            prefix + 'hasBeenUploaded': 1 if self.has_been_uploaded else 0,
             prefix + 'extraJSONData': self._json_dumps(self.extra_data)
         }
         return base_row
@@ -135,10 +148,32 @@ class Measurement(RecordObject):
             'channel': self.channel,
             'averageNoise': self.average_noise,
             'stdDevNoise': self.std_dev_noise,
+            'hasBeenUploaded': self.has_been_uploaded,
             'extraData': self.extra_data
         }
         if self.data_counters:
             base_response.update(self.data_counters.to_api_response())
+        return base_response
+
+    def to_api_upload_payload(self, stations_data=None, service_sets_data=None, bssid_to_network_name_map=None):
+        base_response = {
+            'measurementID': self.measurement_id,
+            'measurementStartTime': self.measurement_start_time,
+            'measurementEndTime': self.measurement_end_time,
+            'measurementDuration': self.measurement_duration,
+            'channel': self.channel,
+            'extraData': self.extra_data
+        }
+        if self.average_noise is not None:
+            base_response['averageNoise'] = self.average_noise
+        if self.std_dev_noise is not None:
+            base_response['stdDevNoise'] = self.std_dev_noise
+        if stations_data is not None:
+            base_response['stations'] = stations_data
+        if service_sets_data is not None:
+            base_response['serviceSets'] = service_sets_data
+        if bssid_to_network_name_map is not None:
+            base_response['bssidToNetworkNameMap'] = bssid_to_network_name_map
         return base_response
 
     @property
@@ -155,29 +190,31 @@ class Measurement(RecordObject):
 
 
 class Station(RecordObject):
-    def __init__(self, station_id, mac_address, extra_data):
+    def __init__(self, station_id, mac_address, extra_data, data_counters=None):
         self.station_id = station_id
         self.mac_address = mac_address
         self.extra_data = extra_data
+        self.data_counters = data_counters
 
     def __repr__(self):
         return "Station(stationID={0}, macAddress={1})".format(self.station_id, self.mac_address)
 
     @classmethod
-    def from_row(cls, row, prefix=""):
+    def from_row(cls, row, prefix="", data_counters=None):
         if row is None:
             return None
         else:
             return cls(
                 row[prefix + "stationID"],
                 row[prefix + "macAddress"],
-                cls._json_loads(row[prefix + "extraJSONData"])
+                cls._json_loads(row[prefix + "extraJSONData"]),
+                data_counters=data_counters
             )
 
     @classmethod
-    def new(cls, mac_address, extra_data=None):
+    def new(cls, mac_address, extra_data=None, data_counters=None):
         return cls(
-            None, mac_address, extra_data or {}
+            None, mac_address, extra_data or {}, data_counters=data_counters
         )
 
     def to_row(self, prefix=""):
@@ -188,11 +225,17 @@ class Station(RecordObject):
         }
 
     def to_api_response(self):
-        return {
+        base_response = {
             'stationID': self.station_id,
             'macAddress': self.mac_address,
             'extraData': self.extra_data
         }
+        if self.data_counters:
+            base_response['dataCounters'] = self.data_counters.to_api_upload_payload()
+        return base_response
+
+    def to_api_upload_payload(self):
+        return self.to_api_response()
 
 
 class ServiceSet(RecordObject):
@@ -223,6 +266,13 @@ class ServiceSet(RecordObject):
             None, bssid, network_name, extra_data or {}
         )
 
+    @property
+    def nice_network_name(self):
+        if self.network_name is not None:
+            return bytes_to_str(self.network_name)
+        else:
+            return None
+
     def to_row(self, prefix=""):
         return {
             prefix + 'serviceSetID': self.service_set_id,
@@ -235,9 +285,23 @@ class ServiceSet(RecordObject):
         return {
             'serviceSetID': self.service_set_id,
             'bssid': self.bssid,
-            'networkName': self.network_name,
+            'networkName': self.nice_network_name,
             'extraData': self.extra_data
         }
+
+    def to_api_upload_payload(self, infra_mac_addresses=None, associated_mac_addresses=None):
+        base_payload = {
+            'serviceSetID': self.service_set_id,
+            'bssid': self.bssid,
+            'extraData': self.extra_data
+        }
+        if self.network_name is not None:
+            base_payload["networkName"] = self.nice_network_name
+        if infra_mac_addresses is not None:
+            base_payload["infrastructureMacAddresses"] = infra_mac_addresses
+        if associated_mac_addresses is not None:
+            base_payload["associatedMacAddresses"] = associated_mac_addresses
+        return base_payload
 
 
 class DataCounters(RecordObject):
@@ -451,3 +515,30 @@ DataCounters(
             'highestRate': self.highest_rate,
             'failedFCSCount': self.failed_fcs_count
         }
+
+    def to_api_upload_payload(self):
+        base_payload = {
+            'managementFrameCount': self.management_frame_count,
+            'associationFrameCount': self.association_frame_count,
+            'reassociationFrameCount': self.reassociation_frame_count,
+            'disassociationFrameCount': self.disassociation_frame_count,
+            'controlFrameCount': self.control_frame_count,
+            'rtsFrameCount': self.rts_frame_count,
+            'ctsFrameCount': self.cts_frame_count,
+            'ackFrameCount': self.ack_frame_count,
+            'dataFrameCount': self.data_frame_count,
+            'dataThroughputIn': self.data_throughput_in,
+            'dataThroughputOut': self.data_throughput_out,
+            'retryFrameCount': self.retry_frame_count
+        }
+        if self.average_power is not None:
+            base_payload['averagePower'] = self.average_power
+        if self.std_dev_power is not None:
+            base_payload['stdDevPower'] = self.std_dev_power
+        if self.lowest_rate is not None:
+            base_payload['lowestRate'] = self.lowest_rate
+        if self.highest_rate is not None:
+            base_payload['highestRate'] = self.highest_rate
+        if self.failed_fcs_count is not None:
+            base_payload['failedFCSCount'] = self.failed_fcs_count
+        return base_payload

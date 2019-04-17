@@ -134,7 +134,7 @@ def select_stations_for_measurement(connection, measurement_id):
         )
 
         return [
-            (Station.from_row(r), DataCounters.from_row(r))
+            Station.from_row(r, data_counters=DataCounters.from_row(r))
             for r in c.fetchall()
         ]
 
@@ -224,11 +224,11 @@ def insert_measurement(transaction, new_measurement):
             INSERT INTO measurement(
                measurementStartTime, measurementEndTime, 
                measurementDuration, channel, averageNoise, stdDevNoise, 
-               extraJSONData
+               hasBeenUploaded, extraJSONData
             ) VALUES (
                :measurementStartTime, :measurementEndTime,
                :measurementDuration, :channel, :averageNoise, :stdDevNoise,
-                :extraJSONData
+               :hasBeenUploaded, :extraJSONData
             )
             
             """,
@@ -373,3 +373,72 @@ def insert_service_set(transaction, new_ssid):
             new_ssid.to_row()
         )
         return c.lastrowid
+
+
+def select_measurements_that_need_upload(connection, limit):
+    clause, params = limit_offset_helper(
+        limit, None, order_by="measurementStartTime"
+    )
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM measurement
+            WHERE hasBeenUploaded=0
+            """ + clause,
+            params
+        )
+        return [Measurement.from_row(r) for r in c.fetchall()]
+
+
+def update_measurements_upload_status(transaction, measurement_ids, new_status):
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            UPDATE measurement
+            SET hasBeenUploaded=?
+            WHERE measurementID IN
+            """ + place_holder_generator(measurement_ids),
+            [1 if new_status else 0] + list(measurement_ids)
+        )
+
+
+def select_infrastructure_mac_addresses_for_measurement_service_set(connection, measurement_id, service_set_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT s.macAddress
+            FROM station AS s
+            WHERE stationID IN (
+              SELECT mapStationID 
+              FROM infrastructureStationServiceSetMap
+              WHERE mapServiceSetID = :serviceSetID
+            ) AND stationID IN (
+              SELECT mapStationID
+              FROM measurementStationMap
+              WHERE mapMeasurementID = :measurementID
+            )
+            """,
+            {"measurementID": measurement_id, "serviceSetID": service_set_id}
+        )
+        return [r["macAddress"] for r in c.fetchall()]
+
+
+def select_associated_mac_addresses_for_measurement_service_set(connection, measurement_id, service_set_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT s.macAddress
+            FROM station AS s
+            WHERE stationID IN (
+              SELECT associatedStationID 
+              FROM associationStationServiceSetMap
+              WHERE associatedServiceSetID = :serviceSetID
+            ) AND stationID IN (
+              SELECT mapStationID
+              FROM measurementStationMap
+              WHERE mapMeasurementID = :measurementID
+            )
+            """,
+            {"measurementID": measurement_id, "serviceSetID": service_set_id}
+        )
+        return [r["macAddress"] for r in c.fetchall()]
