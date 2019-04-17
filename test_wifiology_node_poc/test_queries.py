@@ -263,10 +263,10 @@ class QueriesUnitTest(TestCase):
             )
         stations = select_stations_for_measurement(self.connection, new_measurement.measurement_id)
         assert_that(stations).is_length(2)
-        self.assert_stations_equal(new_station, stations[0][0])
-        self.assert_data_counters_equal(DataCounters.zero(), stations[0][1])
-        self.assert_stations_equal(new_station_2, stations[1][0])
-        self.assert_data_counters_equal(my_counter, stations[1][1])
+        self.assert_stations_equal(new_station, stations[0])
+        self.assert_data_counters_equal(DataCounters.zero(), stations[0].data_counters)
+        self.assert_stations_equal(new_station_2, stations[1])
+        self.assert_data_counters_equal(my_counter, stations[1].data_counters)
 
     def test_measurement_service_set(self):
         new_measurement = Measurement.new(

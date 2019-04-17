@@ -14,9 +14,11 @@ CREATE TABLE IF NOT EXISTS measurement(
   channel INTEGER NOT NULL,
   averageNoise REAL,
   stdDevNoise REAL,
+  hasBeenUploaded BOOLEAN NOT NULL DEFAULT 0,
   extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE INDEX IF NOT EXISTS measurementNeedsUpload_PARTIAL_IDX ON measurement(measurementStartTime) WHERE hasBeenUploaded = 0;
 CREATE INDEX IF NOT EXISTS measurement_channel_startTime_IDX ON measurement(channel, measurementStartTime);
 
 

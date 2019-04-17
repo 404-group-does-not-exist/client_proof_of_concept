@@ -3,6 +3,8 @@ import dpkt
 import pyric.pyw as pyw
 import timerfd
 import select
+import requests
+from urllib.parse import urljoin
 
 import argparse
 import logging
@@ -10,17 +12,26 @@ import time
 import functools
 import os
 from collections import defaultdict
+from bottle import json_dumps
 
 
 from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db
 from wifiology_node_poc.queries.core import write_schema, insert_measurement, insert_service_set_infrastructure_station, \
     insert_station, insert_service_set, select_station_by_mac_address, \
     select_service_set_by_bssid, insert_measurement_service_set, insert_measurement_station, \
-    insert_service_set_associated_station, update_service_set_network_name
+    insert_service_set_associated_station, update_service_set_network_name, select_measurements_that_need_upload, \
+    update_measurements_upload_status, select_stations_for_measurement, select_service_sets_for_measurement, \
+    select_associated_mac_addresses_for_measurement_service_set, \
+    select_infrastructure_mac_addresses_for_measurement_service_set
 from wifiology_node_poc.queries.kv import kv_store_set, kv_store_get
 from wifiology_node_poc.models import Measurement, \
     Station, ServiceSet, DataCounters
 from wifiology_node_poc import LOG_FORMAT
+
+
+# -----------------------------------
+#  CAPTURE
+# -----------------------------------
 
 capture_argument_parser = argparse.ArgumentParser('wifiology_capture')
 capture_argument_parser.add_argument("interface", type=str, help="The WiFi interface to capture on.")
@@ -40,6 +51,10 @@ capture_argument_parser.add_argument(
 capture_argument_parser.add_argument(
     "--ignore-non-root", action="store_true",
     help="Ignore that the current user is not the root user."
+)
+capture_argument_parser.add_argument(
+    "--db-timeout-seconds", type=int, default=60,
+    help="The timeout to set on the database connection"
 )
 
 procedure_logger = logging.getLogger(__name__)
@@ -80,7 +95,8 @@ def capture_argparse_args_to_kwargs(args):
         'sample_seconds': args.sample_seconds,
         'database_loc': args.database_loc,
         'rounds': args.capture_rounds,
-        'ignore_non_root': args.ignore_non_root
+        'ignore_non_root': args.ignore_non_root,
+        'db_timeout_seconds': args.db_timeout_seconds
     }
 
 
@@ -249,15 +265,18 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
             elif frame_type == dpkt.ieee80211.DATA_TYPE:
                 src_mac = binary_to_mac(frame.data_frame.src)
                 dst_mac = binary_to_mac(frame.data_frame.dst)
-                bssid = binary_to_mac(frame.data_frame.bssid)
+                if hasattr(frame.data_frame, 'bssid'):
+                    bssid = binary_to_mac(frame.data_frame.bssid)
+                else:
+                    bssid = None
 
                 current_counter = station_counters[src_mac]
                 dst_current_counter = station_counters[dst_mac]
 
-                if frame.to_ds:
+                if frame.to_ds and bssid:
                     bssid_infra_macs[bssid].append(dst_mac)
                     bssid_associated_macs[bssid].append(src_mac)
-                elif frame.from_ds:
+                elif frame.from_ds and bssid:
                     bssid_infra_macs[bssid].append(src_mac)
                     bssid_associated_macs[bssid].append(dst_mac)
 
@@ -366,7 +385,8 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
 
 
 def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
-                verbose=False, sample_seconds=10, rounds=0, ignore_non_root=False):
+                verbose=False, sample_seconds=10, rounds=0, ignore_non_root=False,
+                db_timeout_seconds=60):
     try:
         effective_user_id = os.geteuid()
         if effective_user_id != 0 and ignore_non_root:
@@ -381,7 +401,7 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
 
         run_forever = rounds == 0
 
-        db_conn = create_connection(database_loc)
+        db_conn = create_connection(database_loc, db_timeout_seconds)
         write_schema(db_conn)
 
         with transaction_wrapper(db_conn) as t:
@@ -436,3 +456,125 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
         raise
     else:
         procedure_logger.info("No more data. Ending...")
+
+
+# -----------------------------------------------
+#  UPLOAD
+# -----------------------------------------------
+
+
+upload_argument_parser = argparse.ArgumentParser('wifiology_upload')
+upload_argument_parser.add_argument("database_location", type=str, help="The database location on disk")
+upload_argument_parser.add_argument(
+    "remote_api_base_url", type=str, help="The base URL for the remote Wifiology server"
+)
+upload_argument_parser.add_argument(
+    'node_id', type=int, help="The central server ID for this node."
+)
+upload_argument_parser.add_argument(
+    "api_key", type=str, help="The API key to use to auth for upload."
+)
+upload_argument_parser.add_argument("-l", "--log-file", type=str, default="-", help="Log file.")
+upload_argument_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose mode.")
+upload_argument_parser.add_argument(
+    "--db-timeout-seconds", type=int, default=60,
+    help="The timeout to set on the database connection"
+)
+upload_argument_parser.add_argument(
+    "--batch-size", type=int, default=2,
+    help="The number of measurements to simultaneously pull from the DB."
+)
+
+
+def pull_and_upload_measurements(db_connection, remote_api_base_url, node_id, api_key, batch_size):
+    with transaction_wrapper(db_connection) as t:
+        target_measurements = select_measurements_that_need_upload(t, batch_size)
+        for measurement in target_measurements:
+            procedure_logger.info(
+                "Pulling stations and service sets info for measurement {0}".format(measurement.measurement_id)
+            )
+            stations = select_stations_for_measurement(t, measurement.measurement_id)
+            service_sets = select_service_sets_for_measurement(t, measurement.measurement_id)
+            infra_macs_map = {}
+            associated_macs_map = {}
+
+            for ss in service_sets:
+                infra_macs_map[ss.service_set_id] = select_infrastructure_mac_addresses_for_measurement_service_set(
+                    t, measurement.measurement_id, ss.service_set_id
+                )
+                associated_macs_map[ss.service_set_id] = select_associated_mac_addresses_for_measurement_service_set(
+                    t, measurement.measurement_id, ss.service_set_id
+                )
+
+            bssid_to_network_name_map = {
+                ss.bssid: ss.nice_network_name for ss in service_sets if ss.nice_network_name
+            }
+
+            procedure_logger.info("Attempting to do data upload for measurement {0}".format(measurement.measurement_id))
+            upload_data = measurement.to_api_upload_payload(
+                [s.to_api_upload_payload() for s in stations],
+                [
+                    ss.to_api_upload_payload(infra_macs_map[ss.service_set_id], associated_macs_map[ss.service_set_id])
+                    for ss in service_sets
+                ],
+                bssid_to_network_name_map
+            )
+            response = requests.post(
+                urljoin(remote_api_base_url, '/api/1.0/nodes/{nid}/measurements'.format(nid=node_id)),
+                data=json_dumps(upload_data),
+                headers={
+                    'Content-Type': 'application/json',
+                    'X-API-Key': api_key
+                }
+            )
+            try:
+                import pprint
+                pprint.pprint(response.json())
+            except:
+                pass
+            response.raise_for_status()
+            procedure_logger.info(
+                "Info on uploaded measurement {0}: {0}".format(measurement.measurement_id, response.json())
+            )
+        update_measurements_upload_status(t, [m.measurement_id for m in target_measurements], True)
+    return bool(target_measurements)
+
+
+def upload_argparse_args_to_kwargs(args):
+    return {
+        'database_location': args.database_location,
+        'remote_api_base_url': args.remote_api_base_url,
+        'node_id': args.node_id,
+        'api_key': args.api_key,
+        'log_file': args.log_file,
+        'verbose': args.verbose,
+        'db_timeout_seconds': args.db_timeout_seconds,
+        'batch_size': args.batch_size
+    }
+
+
+def run_upload(database_location, node_id, remote_api_base_url, api_key, log_file, verbose,
+               db_timeout_seconds=60, batch_size=2, round_delay=3):
+    try:
+        setup_logging(log_file, verbose)
+
+        db_conn = create_connection(database_location, db_timeout_seconds)
+        write_schema(db_conn)
+
+        with transaction_wrapper(db_conn) as t:
+            kv_store_set(t, "upload/script_start_time", time.time())
+            kv_store_set(t, 'upload/script_pid', os.getpid())
+            kv_store_set(t, "upload/remote_url", remote_api_base_url)
+        more_work_to_do = True
+        while more_work_to_do:
+            procedure_logger.info("Pulling and uploading...")
+            more_work_to_do = pull_and_upload_measurements(db_conn, remote_api_base_url, node_id, api_key, batch_size)
+            procedure_logger.info("Snooze {0}".format(round_delay))
+            time.sleep(round_delay)
+
+
+    except BaseException:
+        procedure_logger.exception("Unhandled exception during upload! Aborting,...")
+        raise
+    else:
+        procedure_logger.info("Upload completed successfully. Ending...")
