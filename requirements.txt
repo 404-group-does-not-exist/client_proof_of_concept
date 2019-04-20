@@ -7,3 +7,4 @@ assertpy
 manuf
 eventlet
 nose
+requests

@@ -151,20 +151,23 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
     procedure_logger.info("Opening capture file: {0}".format(capture_file))
     procedure_logger.info("Arming and activating live capture...")
     pcap_dev.activate()
-    fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
-    timerfd.settime(fd, 0, sample_seconds, 0)
-    start_time = time.time()
+    timer_fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
+    try:
+        timerfd.settime(timer_fd, 0, sample_seconds, 0)
+        start_time = time.time()
 
-    dumper = pcap_dev.dump_open(capture_file)
+        dumper = pcap_dev.dump_open(capture_file)
 
-    hdr, data = pcap_dev.next()
-    while hdr and not select.select([fd], [], [], 0)[0]:
-        dumper.dump(hdr, data)
         hdr, data = pcap_dev.next()
-    dumper.close()
-    pcap_dev.close()
-    end_time = time.time()
-    return start_time, end_time, sample_seconds
+        while hdr and not select.select([timer_fd], [], [], 0)[0]:
+            dumper.dump(hdr, data)
+            hdr, data = pcap_dev.next()
+        dumper.close()
+        pcap_dev.close()
+        end_time = time.time()
+        return start_time, end_time, sample_seconds
+    finally:
+        os.close(timer_fd)
 
 
 def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, channel):
