@@ -8,8 +8,10 @@ from wifiology_node_poc.queries.core import write_schema, insert_measurement, \
     select_service_set_by_id, select_station_by_id, select_service_set_by_bssid, \
     select_station_by_mac_address, select_infrastructure_stations_for_service_set, insert_measurement_station, \
     select_stations_for_measurement, select_service_sets_for_measurement, \
-    insert_measurement_service_set, insert_service_set_associated_station, \
-    select_associated_stations_for_service_set
+    insert_service_set_associated_station, select_associated_stations_for_service_set, \
+    select_associated_mac_addresses_for_measurement_service_set, \
+    select_infrastructure_mac_addresses_for_measurement_service_set, \
+    select_measurements_that_need_upload, update_measurements_upload_status, update_service_set_network_name
 
 from wifiology_node_poc.queries.kv import kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
 from wifiology_node_poc.models import Measurement, Station, ServiceSet, DataCounters
@@ -83,7 +85,7 @@ class QueriesUnitTest(TestCase):
     def test_measurement_crud(self):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, [],
-            {"foo": "bar"}
+            extra_data={"foo": "bar"}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -105,7 +107,7 @@ class QueriesUnitTest(TestCase):
         new_measurement_2 = Measurement.new(
             3.0, 4.0, 0.8, 2,
             [],
-            {"baz": "bar"}
+            extra_data={"baz": "bar"}
         )
 
         with transaction_wrapper(self.connection) as t:
@@ -177,10 +179,22 @@ class QueriesUnitTest(TestCase):
         )
         assert_that(new_service_set.to_api_response()).is_instance_of(dict)
 
+        with transaction_wrapper(self.connection) as t:
+            update_service_set_network_name(t, "00:A0:C9:00:00:00", "other wireless")
+        assert_that(select_service_set_by_id(self.connection, new_service_set.service_set_id).network_name)\
+            .is_equal_to("other wireless")
+
     def test_station_service_set_linking(self):
         new_service_set = ServiceSet.new(
              "00:A0:C9:00:00:00", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
         )
+        new_service_set2 = ServiceSet.new(
+            "00:A1:C9:01:02:03", "CU Guest Wireless", {}
+        )
+        new_service_set3 = ServiceSet.new(
+            "00:A0:C9:00:00:01", "CU Boulder Wireless", {"foo": "bar"}
+        )
+
         new_station = Station.new(
             "01:02:03:04:05:06", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
         )
@@ -189,9 +203,27 @@ class QueriesUnitTest(TestCase):
             "01:02:03:04:05:07", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
         )
 
+        new_station_3 = Station.new(
+            "01:02:03:04:05:08", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
+        )
+
+        new_station_4 = Station.new(
+            "01:02:03:04:05:09", {"foo": [1, 2, 3], "bar": [4, 5, 6]}
+        )
+
         with transaction_wrapper(self.connection) as t:
+            measurement_id = insert_measurement(
+                t, Measurement.new(0, 0, 0, 1, [], False,)
+            )
+
             new_service_set.service_set_id = insert_service_set(
                 t, new_service_set
+            )
+            new_service_set2.service_set_id = insert_service_set(
+                t, new_service_set2
+            )
+            new_service_set3.service_set_id = insert_service_set(
+                t, new_service_set3
             )
             new_station.station_id = insert_station(
                 t, new_station
@@ -199,13 +231,29 @@ class QueriesUnitTest(TestCase):
             new_station_2.station_id = insert_station(
                 t, new_station_2
             )
+
+            new_station_3.station_id = insert_station(
+                t, new_station_3
+            )
+            new_station_4.station_id = insert_station(
+                t, new_station_4
+            )
+
             insert_service_set_infrastructure_station(
                 t,
+                measurement_id,
                 new_service_set.bssid,
                 new_station.mac_address
             )
+            insert_service_set_infrastructure_station(
+                t,
+                measurement_id,
+                new_service_set.bssid,
+                new_station_3.mac_address
+            )
             insert_service_set_associated_station(
                 t,
+                measurement_id,
                 new_service_set.bssid,
                 new_station_2.mac_address
             )
@@ -213,10 +261,10 @@ class QueriesUnitTest(TestCase):
         infra_stations = select_infrastructure_stations_for_service_set(
             self.connection, new_service_set.service_set_id
         )
-        assert_that(infra_stations).is_length(1)
+        assert_that(infra_stations).is_length(2)
 
         self.assert_stations_equal(
-            new_station, infra_stations[0]
+            new_station, [i for i in infra_stations if i.station_id == new_station.station_id][0]
         )
 
         associated_stations = select_associated_stations_for_service_set(
@@ -272,7 +320,7 @@ class QueriesUnitTest(TestCase):
         new_measurement = Measurement.new(
             1.0, 2.0, 0.9, 1, 
             [],
-            {"foo": "bar"}
+            extra_data={"foo": "bar"}
         )
         with transaction_wrapper(self.connection) as t:
             new_measurement.measurement_id = insert_measurement(
@@ -281,16 +329,88 @@ class QueriesUnitTest(TestCase):
         new_service_set = ServiceSet.new(
             "00:01:00:00:01:00", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
         )
+        new_service_set2 = ServiceSet.new(
+            "00:01:00:00:01:01", "CU Boulder Wireless", {"baz": ["foo", "bar"]}
+        )
+        new_station = Station.new(
+            "00:02:00:00:02:00", {}
+        )
+        new_station2 = Station.new(
+            "00:02:00:00:02:01", {}
+        )
         with transaction_wrapper(self.connection) as t:
             new_service_set.service_set_id = insert_service_set(
                 t, new_service_set
             )
+            new_service_set2.service_set_id = insert_service_set(
+                t, new_service_set2
+            )
+            new_station.station_id = insert_station(
+                t, new_station
+            )
+            new_station2.station_id = insert_station(
+                t, new_station2
+            )
+
         with transaction_wrapper(self.connection) as t:
-            insert_measurement_service_set(t, new_measurement.measurement_id, new_service_set.service_set_id)
+            insert_service_set_associated_station(
+                t, new_measurement.measurement_id, new_service_set.bssid, new_station.mac_address
+            )
+            insert_service_set_associated_station(
+                t, new_measurement.measurement_id, new_service_set2.bssid, new_station2.mac_address
+            )
 
         service_sets = select_service_sets_for_measurement(self.connection, new_measurement.measurement_id)
-        assert_that(service_sets).is_length(1)
-        self.assert_service_sets_equal(new_service_set, service_sets[0])
+        assert_that(service_sets).is_length(2)
+        for ss in service_sets:
+            if ss.service_set_id == new_service_set.service_set_id:
+                self.assert_service_sets_equal(ss, new_service_set)
+            elif ss.service_set_id == new_service_set2.service_set_id:
+                self.assert_service_sets_equal(ss, new_service_set2)
+            else:
+                assert False
+
+    def test_upload_related_queries(self):
+        new_measurement = Measurement.new(
+            1.0, 2.0, 0.9, 1, [],
+            extra_data={"foo": "bar"}
+        )
+
+        with transaction_wrapper(self.connection) as t:
+            new_measurement.measurement_id = insert_measurement(
+                t, new_measurement
+            )
+        m = select_measurements_that_need_upload(self.connection, 100)
+        assert_that(m).is_length(1)
+        self.assert_measurements_equal(m[0], new_measurement)
+
+        with transaction_wrapper(self.connection) as t:
+            update_measurements_upload_status(t, [new_measurement.measurement_id], True)
+        assert_that(select_measurements_that_need_upload(self.connection, 100)).is_empty()
+
+        with transaction_wrapper(self.connection) as t:
+            ssid = insert_service_set(
+                t, ServiceSet.new("00:00:00:01:01:01", "test")
+            )
+            sid1 = insert_station(
+                t, Station.new("01:02:03:04:05:06")
+            )
+            sid2 = insert_station(
+                t, Station.new("01:02:03:04:05:07")
+            )
+            insert_service_set_infrastructure_station(
+                t, new_measurement.measurement_id, "00:00:00:01:01:01", "01:02:03:04:05:06"
+            )
+            insert_service_set_associated_station(
+                t, new_measurement.measurement_id, "00:00:00:01:01:01", "01:02:03:04:05:07"
+            )
+
+        assert_that(select_infrastructure_mac_addresses_for_measurement_service_set(
+            self.connection, new_measurement.measurement_id, ssid
+        )).is_length(1).contains("01:02:03:04:05:06")
+        assert_that(select_associated_mac_addresses_for_measurement_service_set(
+            self.connection, new_measurement.measurement_id, ssid
+        )).is_length(1).contains("01:02:03:04:05:07")
 
     def test_kv_functionality(self):
         assert_that(kv_store_get_all(self.connection)).is_empty()

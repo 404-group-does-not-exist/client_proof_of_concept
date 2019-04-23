@@ -38,20 +38,27 @@ CREATE TABLE IF NOT EXISTS serviceSet(
 CREATE INDEX IF NOT EXISTS serviceSetNetworkName_IDX ON serviceSet(networkName);
 
 CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(
-  mapStationID INTEGER NOT NULL REFERENCES station(stationID),
-  mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
-  PRIMARY KEY(mapStationID, mapServiceSetID)
+  mapStationID INTEGER NOT NULL REFERENCES station(stationID) ON DELETE CASCADE,
+  mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID) ON DELETE CASCADE,
+  measurementID INTEGER NOT NULL REFERENCES measurement(measurementID) ON DELETE CASCADE,
+  PRIMARY KEY(mapStationID, mapServiceSetID, measurementID)
 );
+CREATE INDEX IF NOT EXISTS infrastructureStationServiceSetMap_Measurement_IDX ON infrastructureStationServiceSetMap(measurementID);
+CREATE INDEX IF NOT EXISTS infrastructureStationServiceSetMap_Measurement_ServiceSet_IDX ON infrastructureStationServiceSetMap(measurementID, mapServiceSetID);
 
 CREATE TABLE IF NOT EXISTS associationStationServiceSetMap(
-  associatedStationID INTEGER NOT NULL REFERENCES station(stationID),
-  associatedServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
-  PRIMARY KEY(associatedStationID, associatedServiceSetID)
+  associatedStationID INTEGER NOT NULL REFERENCES station(stationID) ON DELETE CASCADE,
+  associatedServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID) ON DELETE CASCADE,
+  measurementID INTEGER NOT NULL REFERENCES measurement(measurementID) ON DELETE CASCADE,
+  PRIMARY KEY(associatedStationID, associatedServiceSetID, measurementID)
 );
+CREATE INDEX IF NOT EXISTS associationStationServiceSetMap_Measurement_IDX ON associationStationServiceSetMap(measurementID);
+CREATE INDEX IF NOT EXISTS associationStationServiceSetMap_Measurement_ServiceSet_IDX ON associationStationServiceSetMap(measurementID, associatedServiceSetID);
+
 
 CREATE TABLE IF NOT EXISTS measurementStationMap(
-  mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID),
-  mapStationID INTEGER NOT NULL REFERENCES station(stationID), -- can we use the same name as line 30?
+  mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID) ON DELETE CASCADE,
+  mapStationID INTEGER NOT NULL REFERENCES station(stationID) ON DELETE CASCADE,
   managementFrameCount INTEGER NOT NULL DEFAULT 0,
   associationFrameCount INTEGER NOT NULL DEFAULT 0,
   reassociationFrameCount INTEGER NOT NULL DEFAULT 0,
@@ -74,10 +81,10 @@ CREATE TABLE IF NOT EXISTS measurementStationMap(
 CREATE INDEX IF NOT EXISTS measurementStationMapMeasurement_IDX ON measurementStationMap(mapMeasurementID);
 
 -- write select for this one and test it
-CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
-  mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID), -- can we use the same name as line 36?
-  mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID),
-  PRIMARY KEY(mapMeasurementID, mapServiceSetID)
-);
+-- CREATE TABLE IF NOT EXISTS measurementServiceSetMap(
+--   mapMeasurementID INTEGER NOT NULL REFERENCES measurement(measurementID) ON DELETE CASCADE,
+--   mapServiceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID) ON DELETE CASCADE,
+--   PRIMARY KEY(mapMeasurementID, mapServiceSetID)
+-- );
 
 

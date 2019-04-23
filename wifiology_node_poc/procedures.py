@@ -18,7 +18,7 @@ from bottle import json_dumps
 from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db
 from wifiology_node_poc.queries.core import write_schema, insert_measurement, insert_service_set_infrastructure_station, \
     insert_station, insert_service_set, select_station_by_mac_address, \
-    select_service_set_by_bssid, insert_measurement_service_set, insert_measurement_station, \
+    select_service_set_by_bssid, insert_measurement_station, \
     insert_service_set_associated_station, update_service_set_network_name, select_measurements_that_need_upload, \
     update_measurements_upload_status, select_stations_for_measurement, select_service_sets_for_measurement, \
     select_associated_mac_addresses_for_measurement_service_set, \
@@ -151,20 +151,23 @@ def run_live_capture(wireless_interface, capture_file, sample_seconds):
     procedure_logger.info("Opening capture file: {0}".format(capture_file))
     procedure_logger.info("Arming and activating live capture...")
     pcap_dev.activate()
-    fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
-    timerfd.settime(fd, 0, sample_seconds, 0)
-    start_time = time.time()
+    timer_fd = timerfd.create(timerfd.CLOCK_MONOTONIC, 0)
+    try:
+        timerfd.settime(timer_fd, 0, sample_seconds, 0)
+        start_time = time.time()
 
-    dumper = pcap_dev.dump_open(capture_file)
+        dumper = pcap_dev.dump_open(capture_file)
 
-    hdr, data = pcap_dev.next()
-    while hdr and not select.select([fd], [], [], 0)[0]:
-        dumper.dump(hdr, data)
         hdr, data = pcap_dev.next()
-    dumper.close()
-    pcap_dev.close()
-    end_time = time.time()
-    return start_time, end_time, sample_seconds
+        while hdr and not select.select([timer_fd], [], [], 0)[0]:
+            dumper.dump(hdr, data)
+            hdr, data = pcap_dev.next()
+        dumper.close()
+        pcap_dev.close()
+        end_time = time.time()
+        return start_time, end_time, sample_seconds
+    finally:
+        os.close(timer_fd)
 
 
 def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, channel):
@@ -372,13 +375,12 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
                 service_set.service_set_id = opt_service_set.service_set_id
             else:
                 service_set.service_set_id = insert_service_set(t, service_set)
-            insert_measurement_service_set(t, measurement.measurement_id, service_set.service_set_id)
         for bssid, infra_macs in bssid_infra_macs.items():
             for mac in infra_macs:
-                insert_service_set_infrastructure_station(t, bssid, mac)
+                insert_service_set_infrastructure_station(t, measurement.measurement_id, bssid, mac)
         for bssid, associated_macs in bssid_associated_macs.items():
             for mac in associated_macs:
-                insert_service_set_associated_station(t, bssid, mac)
+                insert_service_set_associated_station(t, measurement.measurement_id, bssid, mac)
         for bssid, ssid in bssid_to_ssid_map.items():
             update_service_set_network_name(t, bssid, ssid)
     optimize_db(db_conn)

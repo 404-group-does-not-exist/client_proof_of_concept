@@ -22,31 +22,31 @@ def select_service_set_by_bssid(connection, bssid):
         return ServiceSet.from_row(c.fetchone())
 
 
-def insert_service_set_infrastructure_station(transaction, service_set_bssid, station_mac):
+def insert_service_set_infrastructure_station(transaction, measurement_id, service_set_bssid, station_mac):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT OR IGNORE INTO infrastructureStationServiceSetMap(
-               mapStationID, mapServiceSetID
-            ) SELECT s.stationID, ss.serviceSetID
+            INSERT INTO infrastructureStationServiceSetMap(
+               mapStationID, mapServiceSetID, measurementID
+            ) SELECT s.stationID, ss.serviceSetID, ?
             FROM station AS s, serviceSet AS ss
             WHERE s.macAddress=? AND ss.bssid = ?       
             """,
-            (station_mac, service_set_bssid)
+            (measurement_id, station_mac, service_set_bssid)
         )
 
 
-def insert_service_set_associated_station(transaction, service_set_bssid, station_mac):
+def insert_service_set_associated_station(transaction, measurement_id, service_set_bssid, station_mac):
     with cursor_manager(transaction) as c:
         c.execute(
             """
-            INSERT OR IGNORE INTO associationStationServiceSetMap(
-               associatedStationID, associatedServiceSetID
-            ) SELECT s.stationID, ss.serviceSetID
+            INSERT INTO associationStationServiceSetMap(
+               associatedStationID, associatedServiceSetID, measurementID
+            ) SELECT s.stationID, ss.serviceSetID, ?
             FROM station AS s, serviceSet AS ss
             WHERE s.macAddress=? AND ss.bssid = ?    
             """,
-            (station_mac, service_set_bssid)
+            (measurement_id, station_mac, service_set_bssid)
         )
 
 
@@ -66,12 +66,11 @@ def select_infrastructure_stations_for_service_set(connection, service_set_id):
     with cursor_manager(connection) as c:
         c.execute(
             """
-            SELECT s.* FROM station AS s
-            WHERE s.stationID IN (
-              SELECT mapStationID FROM infrastructureStationServiceSetMap AS m
-              JOIN serviceSet AS ss ON ss.serviceSetID = m.mapServiceSetID
-              WHERE serviceSetID = :serviceSetID
-            )
+            SELECT DISTINCT s.* 
+            FROM station AS s
+            JOIN infrastructureStationServiceSetMap AS m
+            ON m.mapStationID = s.stationID
+            WHERE m.mapServiceSetID = :serviceSetID
             """,
             {"serviceSetID": service_set_id}
         )
@@ -82,12 +81,11 @@ def select_associated_stations_for_service_set(connection, service_set_id):
     with cursor_manager(connection) as c:
         c.execute(
             """
-            SELECT s.* FROM station AS s
-            WHERE s.stationID IN (
-              SELECT associatedStationID FROM associationStationServiceSetMap AS m
-              JOIN serviceSet AS ss ON ss.serviceSetID = m.associatedServiceSetID
-              WHERE serviceSetID = :serviceSetID
-            )
+            SELECT DISTINCT s.* 
+            FROM station AS s
+            JOIN associationStationServiceSetMap AS m
+            ON m.associatedStationID = s.stationID
+            WHERE m.associatedServiceSetID = :serviceSetID
             """,
             {"serviceSetID": service_set_id}
         )
@@ -139,31 +137,34 @@ def select_stations_for_measurement(connection, measurement_id):
         ]
 
 
-def insert_measurement_service_set(transaction, measurement_id, service_set_id):
-    with cursor_manager(transaction) as c:
-        c.execute(
-            """
-            INSERT INTO measurementServiceSetMap(
-               mapMeasurementID, mapServiceSetID
-            ) VALUES (
-               ?, ?
-            )         
-            """,
-            (measurement_id, service_set_id)
-        )
+# def insert_measurement_service_set(transaction, measurement_id, service_set_id):
+#     with cursor_manager(transaction) as c:
+#         c.execute(
+#             """
+#             INSERT INTO measurementServiceSetMap(
+#                mapMeasurementID, mapServiceSetID
+#             ) VALUES (
+#                ?, ?
+#             )
+#             """,
+#             (measurement_id, service_set_id)
+#         )
 
 
 def select_service_sets_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
         c.execute(
           """
-          SELECT * FROM serviceSet as s
-          WHERE s.serviceSetID in (
-            SELECT mapServiceSetID FROM measurementServiceSetMap
-            WHERE mapMeasurementID = :measurement_id
+          SELECT s.* 
+          FROM serviceSet as s
+          WHERE EXISTS (
+            SELECT 1 FROM associationStationServiceSetMap AS a 
+            WHERE a.measurementID = :measurementID AND s.serviceSetID = a.associatedServiceSetID UNION ALL
+            SELECT 1 FROM infrastructureStationServiceSetMap AS m
+            WHERE m.measurementID = :measurementID AND s.serviceSetID = m.mapServiceSetID
           )
           """,
-          {"measurement_id": measurement_id}
+          {"measurementID": measurement_id}
         )
         return [ServiceSet.from_row(r) for r in c.fetchall()]
 
@@ -174,16 +175,14 @@ def select_service_sets_by_channel(connection, channel_num, limit=None, offset=N
             'channelNum': channel_num
         }
     )
-
     with cursor_manager(connection) as c:
         c.execute(
             """
             SELECT DISTINCT ss.* FROM serviceSet AS ss
-            JOIN measurementServiceSetMap AS map
-            ON map.mapServiceSetID = ss.serviceSetID
-            WHERE map.mapMeasurementID IN (
-              SELECT measurementID FROM measurement WHERE channel=:channelNum
-            )
+            LEFT JOIN associationStationServiceSetMap AS a ON ss.serviceSetID = a.associatedServiceSetID
+            LEFT JOIN infrastructureStationServiceSetMap AS m ON ss.serviceSetID = m.mapServiceSetID
+            JOIN measurement AS m2 ON a.measurementID = m2.measurementID OR m2.measurementID = m.measurementID
+            WHERE m2.channel =  :channelNum
             """ + clause,
             params
         ),
@@ -201,11 +200,9 @@ def select_stations_by_channel(connection, channel_num, limit=None, offset=None)
         c.execute(
             """
             SELECT DISTINCT s.* FROM station AS s
-            JOIN measurementStationMap AS map
-            ON map.mapStationID = s.stationID
-            WHERE map.mapMeasurementID IN (
-              SELECT measurementID FROM measurement WHERE channel=:channelNum
-            )
+            JOIN measurementStationMap AS map ON map.mapStationID = s.stationID
+            JOIN measurement AS m ON m.measurementID = map.mapMeasurementID
+            WHERE channel = :channelNum 
             """ + clause,
             params
         ),
@@ -261,6 +258,7 @@ def select_data_counters_for_measurements(connection, measurement_ids):
         c.execute(
             """
             SELECT 
+              m.mapMeasurementID AS measurementID,
               SUM(m.managementFrameCount) AS managementFrameCount,
               SUM(m.associationFrameCount) AS associationFrameCount,
               SUM(m.reassociationFrameCount) AS reassociationFrameCount,
@@ -284,6 +282,7 @@ def select_data_counters_for_measurements(connection, measurement_ids):
             """ + place_holder_generator(measurement_ids),
             measurement_ids
         )
+        return {row["measurementID"]: DataCounters.from_row(row) for row in c.fetchall()}
 
 
 def select_latest_channel_measurements(connection, channel_num, limit=None, offset=None):
@@ -382,7 +381,8 @@ def select_measurements_that_need_upload(connection, limit):
     with cursor_manager(connection) as c:
         c.execute(
             """
-            SELECT * FROM measurement
+            SELECT m.* 
+            FROM measurement AS m
             WHERE hasBeenUploaded=0
             """ + clause,
             params
@@ -408,15 +408,9 @@ def select_infrastructure_mac_addresses_for_measurement_service_set(connection, 
             """
             SELECT s.macAddress
             FROM station AS s
-            WHERE stationID IN (
-              SELECT mapStationID 
-              FROM infrastructureStationServiceSetMap
-              WHERE mapServiceSetID = :serviceSetID
-            ) AND stationID IN (
-              SELECT mapStationID
-              FROM measurementStationMap
-              WHERE mapMeasurementID = :measurementID
-            )
+            JOIN infrastructureStationServiceSetMap AS m
+            ON s.stationID = m.mapStationID
+            WHERE m.measurementID = :measurementID AND m.mapServiceSetID = :serviceSetID
             """,
             {"measurementID": measurement_id, "serviceSetID": service_set_id}
         )
@@ -429,15 +423,9 @@ def select_associated_mac_addresses_for_measurement_service_set(connection, meas
             """
             SELECT s.macAddress
             FROM station AS s
-            WHERE stationID IN (
-              SELECT associatedStationID 
-              FROM associationStationServiceSetMap
-              WHERE associatedServiceSetID = :serviceSetID
-            ) AND stationID IN (
-              SELECT mapStationID
-              FROM measurementStationMap
-              WHERE mapMeasurementID = :measurementID
-            )
+            JOIN associationStationServiceSetMap AS a 
+            ON s.stationID = a.associatedStationID
+            WHERE a.measurementID = :measurementID AND a.associatedServiceSetID = :serviceSetID
             """,
             {"measurementID": measurement_id, "serviceSetID": service_set_id}
         )
