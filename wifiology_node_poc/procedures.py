@@ -18,7 +18,7 @@ from bottle import json_dumps
 from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db
 from wifiology_node_poc.queries.core import write_schema, insert_measurement, insert_service_set_infrastructure_station, \
     insert_station, insert_service_set, select_station_by_mac_address, \
-    select_service_set_by_bssid, insert_measurement_service_set, insert_measurement_station, \
+    select_service_set_by_bssid, insert_measurement_station, \
     insert_service_set_associated_station, update_service_set_network_name, select_measurements_that_need_upload, \
     update_measurements_upload_status, select_stations_for_measurement, select_service_sets_for_measurement, \
     select_associated_mac_addresses_for_measurement_service_set, \
@@ -375,13 +375,12 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
                 service_set.service_set_id = opt_service_set.service_set_id
             else:
                 service_set.service_set_id = insert_service_set(t, service_set)
-            insert_measurement_service_set(t, measurement.measurement_id, service_set.service_set_id)
         for bssid, infra_macs in bssid_infra_macs.items():
             for mac in infra_macs:
-                insert_service_set_infrastructure_station(t, bssid, mac)
+                insert_service_set_infrastructure_station(t, measurement.measurement_id, bssid, mac)
         for bssid, associated_macs in bssid_associated_macs.items():
             for mac in associated_macs:
-                insert_service_set_associated_station(t, bssid, mac)
+                insert_service_set_associated_station(t, measurement.measurement_id, bssid, mac)
         for bssid, ssid in bssid_to_ssid_map.items():
             update_service_set_network_name(t, bssid, ssid)
     optimize_db(db_conn)
