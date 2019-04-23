@@ -1,13 +1,5 @@
 import smtplib, ssl, sys
 
-#from file import *
-
-##try: notif
-##except NameError: notif = None
-
-##if notif is None:
-##    sys.exit()
-##message = notif
 
 smtp_server = "smtp.gmail.com"
 port = 587  # For SSL
