@@ -15,14 +15,14 @@ from collections import defaultdict
 from bottle import json_dumps
 
 
-from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db
+from wifiology_node_poc.core_sqlite import create_connection, transaction_wrapper, optimize_db, vacuum_db
 from wifiology_node_poc.queries.core import write_schema, insert_measurement, insert_service_set_infrastructure_station, \
     insert_station, insert_service_set, select_station_by_mac_address, \
     select_service_set_by_bssid, insert_measurement_station, \
     insert_service_set_associated_station, update_service_set_network_name, select_measurements_that_need_upload, \
     update_measurements_upload_status, select_stations_for_measurement, select_service_sets_for_measurement, \
     select_associated_mac_addresses_for_measurement_service_set, \
-    select_infrastructure_mac_addresses_for_measurement_service_set
+    select_infrastructure_mac_addresses_for_measurement_service_set, delete_old_measurements
 from wifiology_node_poc.queries.kv import kv_store_set, kv_store_get
 from wifiology_node_poc.models import Measurement, \
     Station, ServiceSet, DataCounters
@@ -573,10 +573,79 @@ def run_upload(database_location, node_id, remote_api_base_url, api_key, log_fil
             more_work_to_do = pull_and_upload_measurements(db_conn, remote_api_base_url, node_id, api_key, batch_size)
             procedure_logger.info("Snooze {0}".format(round_delay))
             time.sleep(round_delay)
-
-
     except BaseException:
         procedure_logger.exception("Unhandled exception during upload! Aborting,...")
         raise
     else:
         procedure_logger.info("Upload completed successfully. Ending...")
+
+# -----------------------------------------------
+#  JANITOR
+# -----------------------------------------------
+
+
+janitor_argument_parser = argparse.ArgumentParser('Wifiology Janitor')
+janitor_argument_parser.add_argument("database_location", type=str, help="The database location on disk")
+janitor_argument_parser.add_argument("-l", "--log-file", type=str, default="-", help="Log file.")
+janitor_argument_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose mode.")
+janitor_argument_parser.add_argument(
+    "--db-timeout-seconds", type=int, default=60,
+    help="The timeout to set on the database connection"
+)
+janitor_argument_parser.add_argument(
+    "--measurement-max-age-days", type=int, default=14, help="The maximum number of days to keep measurements around."
+)
+janitor_argument_parser.add_argument(
+    "--do-vacuum", action="store_true", help="Run a VACUUM on the database."
+)
+janitor_argument_parser.add_argument(
+    "--do-optimize", action="store_true", help="Run  an OPTIMIZE on the database"
+)
+
+
+def clean_db(db_connection, measuement_max_age_days, do_vacuum=False, do_optimize=False):
+    with transaction_wrapper(db_connection) as t:
+        deleted_count = delete_old_measurements(t, measuement_max_age_days)
+        procedure_logger.info("{0} old measurements deleted from the database".format(deleted_count))
+    if do_optimize:
+        procedure_logger.info("Beginning DB optimize...")
+        optimize_db(db_connection)
+        procedure_logger.info("DB optimize completed.")
+    if do_vacuum:
+        procedure_logger.info("Beginning DB vacuum...")
+        vacuum_db(db_connection)
+        procedure_logger.info("DB Vacuum completed.")
+    return
+
+
+def janitor_argparse_args_to_kwargs(args):
+    return {
+        'database_location': args.database_location,
+        'log_file': args.log_file,
+        'verbose': args.verbose,
+        'db_timeout_seconds': args.db_timeout_seconds,
+        'measurement_max_age_days': args.measurement_max_age_days,
+        'do_vacuum': args.do_vacuum,
+        'do_optimize': args.do_optimize
+    }
+
+
+def run_janitor(database_location, log_file, verbose, db_timeout_seconds=60, measurement_max_age_days=14,
+                do_vacuum=False, do_optimize=False):
+    try:
+        setup_logging(log_file, verbose)
+
+        db_conn = create_connection(database_location, db_timeout_seconds)
+        write_schema(db_conn)
+
+        with transaction_wrapper(db_conn) as t:
+            kv_store_set(t, "janitor/script_start_time", time.time())
+            kv_store_set(t, 'janitor/script_pid', os.getpid())
+        procedure_logger.info("Sarting Janitorial tasks...")
+        clean_db(db_conn, measurement_max_age_days, do_vacuum, do_optimize)
+        procedure_logger.info("Database janitorial tasks finished")
+    except BaseException:
+        procedure_logger.exception("Unhandled exception during upload! Aborting,...")
+        raise
+    else:
+        procedure_logger.info("Janitor completed successfully. Ending...")

@@ -3,6 +3,8 @@ from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCoun
 from wifiology_node_poc.queries import limit_offset_helper, SQL_FOLDER, place_holder_generator
 
 
+import time
+
 def select_all_service_sets(connection, limit=None, offset=None):
     clause, params = limit_offset_helper(limit, offset)
     with cursor_manager(connection) as c:
@@ -430,3 +432,15 @@ def select_associated_mac_addresses_for_measurement_service_set(connection, meas
             {"measurementID": measurement_id, "serviceSetID": service_set_id}
         )
         return [r["macAddress"] for r in c.fetchall()]
+
+
+def delete_old_measurements(transaction, days_old):
+    start_time = time.time() - (60*60*24*days_old)
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            DELETE FROM measurement WHERE measurementStartTime < ?
+            """,
+            [start_time]
+        )
+        return c.rowcount
