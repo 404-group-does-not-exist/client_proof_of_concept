@@ -30,11 +30,11 @@ def insert_service_set_infrastructure_station(transaction, measurement_id, servi
             """
             INSERT INTO infrastructureStationServiceSetMap(
                mapStationID, mapServiceSetID, measurementID
-            ) SELECT s.stationID, ss.serviceSetID, ?
+            ) SELECT s.stationID, ss.serviceSetID, :measurementID
             FROM station AS s, serviceSet AS ss
-            WHERE s.macAddress=? AND ss.bssid = ?       
+            WHERE s.macAddress=:mac AND ss.bssid=:bssid       
             """,
-            (measurement_id, station_mac, service_set_bssid)
+            {"measurementID": measurement_id, "mac": station_mac, "bssid": service_set_bssid}
         )
 
 
@@ -44,11 +44,11 @@ def insert_service_set_associated_station(transaction, measurement_id, service_s
             """
             INSERT INTO associationStationServiceSetMap(
                associatedStationID, associatedServiceSetID, measurementID
-            ) SELECT s.stationID, ss.serviceSetID, ?
+            ) SELECT s.stationID, ss.serviceSetID, :measurementID
             FROM station AS s, serviceSet AS ss
-            WHERE s.macAddress=? AND ss.bssid = ?    
+            WHERE s.macAddress=:mac AND ss.bssid=:bssid    
             """,
-            (measurement_id, station_mac, service_set_bssid)
+            {"measurementID": measurement_id, "mac": station_mac, "bssid": service_set_bssid}
         )
 
 

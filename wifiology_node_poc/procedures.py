@@ -174,8 +174,8 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     weird_frame_count = 0
 
     bssid_to_ssid_map = {}
-    bssid_infra_macs = defaultdict(list)
-    bssid_associated_macs = defaultdict(list)
+    bssid_infra_macs = defaultdict(set)
+    bssid_associated_macs = defaultdict(set)
 
     noise_measurements = []
 
@@ -194,7 +194,6 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
             frame_type = frame.type
             frame_subtype = frame.subtype
 
-
             if frame_type == dpkt.ieee80211.MGMT_TYPE:
                 mac = binary_to_mac(frame.mgmt.src)
                 current_counter = station_counters[mac]
@@ -204,7 +203,13 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                     if hasattr(frame, 'ssid'):
                         bssid = binary_to_mac(frame.mgmt.bssid)
                         bssid_to_ssid_map[bssid] = frame.ssid.data
-                        bssid_infra_macs[bssid].append(mac)
+                        bssid_infra_macs[bssid].add(mac)
+
+                if frame_subtype == dpkt.ieee80211.M_PROBE_RESP:
+                    if hasattr(frame, 'ssid'):
+                        bssid = binary_to_mac(frame.mgmt.bssid)
+                        bssid_to_ssid_map[bssid] = frame.ssid.data
+                        bssid_infra_macs[bssid].add(mac)
 
                 if frame_subtype in (dpkt.ieee80211.M_ASSOC_REQ, dpkt.ieee80211.M_ASSOC_RESP):
                     current_counter.association_frame_count += 1
@@ -277,11 +282,11 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 dst_current_counter = station_counters[dst_mac]
 
                 if frame.to_ds and bssid:
-                    bssid_infra_macs[bssid].append(dst_mac)
-                    bssid_associated_macs[bssid].append(src_mac)
+                    bssid_infra_macs[bssid].add(dst_mac)
+                    bssid_associated_macs[bssid].add(src_mac)
                 elif frame.from_ds and bssid:
-                    bssid_infra_macs[bssid].append(src_mac)
-                    bssid_associated_macs[bssid].append(dst_mac)
+                    bssid_infra_macs[bssid].add(src_mac)
+                    bssid_associated_macs[bssid].add(dst_mac)
 
                 current_counter.data_throughput_out += len(frame.data_frame.data)
                 dst_current_counter.data_throughput_in += len(frame.data_frame.data)
