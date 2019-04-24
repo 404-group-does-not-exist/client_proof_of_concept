@@ -157,7 +157,7 @@ def select_service_sets_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
         c.execute(
           """
-          SELECT s.* 
+          SELECT DISTINCT s.* 
           FROM serviceSet as s
           WHERE EXISTS (
             SELECT 1 FROM associationStationServiceSetMap AS a 

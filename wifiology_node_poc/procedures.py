@@ -488,7 +488,7 @@ upload_argument_parser.add_argument(
     help="The timeout to set on the database connection"
 )
 upload_argument_parser.add_argument(
-    "--batch-size", type=int, default=2,
+    "--batch-size", type=int, default=1,
     help="The number of measurements to simultaneously pull from the DB."
 )
 
