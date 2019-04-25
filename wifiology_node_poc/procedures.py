@@ -5,6 +5,8 @@ import timerfd
 import select
 import requests
 from urllib.parse import urljoin
+from scapy.all import PcapReader
+from scapy.layers import dot11
 
 import argparse
 import logging
@@ -27,6 +29,7 @@ from wifiology_node_poc.queries.kv import kv_store_set, kv_store_get
 from wifiology_node_poc.models import Measurement, \
     Station, ServiceSet, DataCounters
 from wifiology_node_poc import LOG_FORMAT
+from wifiology_node_poc.watchdog import run_monitored
 
 
 # -----------------------------------
@@ -181,12 +184,134 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
 
     station_counters = defaultdict(DataCounters.zero)
 
+    for packet in PcapReader(capture_file):
+            radiotap_frame = packet.getlayer(dot11.RadioTap)
+            wifi_frame = radiotap_frame.payload
+            wifi_frame.show()
+            if radiotap_frame.dBm_AntNoise is not None:
+                noise_measurements.append(radiotap_frame.dBm_AntNoise)
+
+            frame_type = wifi_frame.type
+            frame_subtype = wifi_frame.subtype
+
+            if frame_type == 'Management':
+                mac = binary_to_mac(frame.mgmt.src)
+                current_counter = station_counters[mac]
+                current_counter.management_frame_count += 1
+
+                if frame_subtype == dpkt.ieee80211.M_BEACON:
+                    if hasattr(frame, 'ssid'):
+                        bssid = binary_to_mac(frame.mgmt.bssid)
+                        bssid_to_ssid_map[bssid] = frame.ssid.data
+                        bssid_infra_macs[bssid].add(mac)
+
+                if frame_subtype == dpkt.ieee80211.M_PROBE_RESP:
+                    if hasattr(frame, 'ssid'):
+                        bssid = binary_to_mac(frame.mgmt.bssid)
+                        bssid_to_ssid_map[bssid] = frame.ssid.data
+                        bssid_infra_macs[bssid].add(mac)
+
+                if frame_subtype in (dpkt.ieee80211.M_ASSOC_REQ, dpkt.ieee80211.M_ASSOC_RESP):
+                    current_counter.association_frame_count += 1
+                if frame_subtype in (dpkt.ieee80211.M_REASSOC_REQ, dpkt.ieee80211.M_REASSOC_RESP):
+                    current_counter.reassociation_frame_count += 1
+                if frame_subtype == dpkt.ieee80211.M_DISASSOC:
+                    current_counter.disassociation_frame_count += 1
+                if frame.retry:
+                    current_counter.retry_frame_count += 1
+                if radio_tap_packet.ant_sig_present:
+                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
+                if radio_tap_packet.rate_present:
+                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
+                if radio_tap_packet.flags_present:
+                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+
+            elif frame_type == 'Control':
+                include_in_extra_measurements = True
+
+                if frame_subtype == dpkt.ieee80211.C_RTS:
+                    mac = binary_to_mac(frame.rts.src)
+                    current_counter = station_counters[mac]
+                    current_counter.cts_frame_count += 1
+
+                elif frame_subtype == dpkt.ieee80211.C_CTS:
+                    mac = binary_to_mac(frame.cts.dst)
+                    include_in_extra_measurements = False
+                    current_counter = station_counters[mac]
+                    current_counter.rts_frame_count += 1
+
+                elif frame_subtype == dpkt.ieee80211.C_ACK:
+                    mac = binary_to_mac(frame.ack.dst)
+                    include_in_extra_measurements = False
+                    current_counter = station_counters[mac]
+                    current_counter.ack_frame_count += 1
+
+                elif frame_subtype == dpkt.ieee80211.C_BLOCK_ACK:
+                    mac = binary_to_mac(frame.back.src)
+                    current_counter = station_counters[mac]
+
+                elif frame_subtype == dpkt.ieee80211.C_BLOCK_ACK_REQ:
+                    mac = binary_to_mac(frame.bar.src)
+                    current_counter = station_counters[mac]
+
+                elif frame_subtype == dpkt.ieee80211.C_CF_END:
+                    mac = binary_to_mac(frame.cf_end.src)
+                    current_counter = station_counters[mac]
+                else:
+                    continue
+                if frame.retry:
+                    current_counter.retry_frame_count += 1
+                if include_in_extra_measurements:
+                    current_counter.control_frame_count += 1
+                    if radio_tap_packet.ant_sig_present:
+                        current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
+                    if radio_tap_packet.rate_present:
+                        current_counter.rate_measurements.append(radio_tap_packet.rate.val)
+                    if radio_tap_packet.flags_present:
+                        current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+
+            elif frame_type == 'Data':
+                src_mac = binary_to_mac(frame.data_frame.src)
+                dst_mac = binary_to_mac(frame.data_frame.dst)
+                if hasattr(frame.data_frame, 'bssid'):
+                    bssid = binary_to_mac(frame.data_frame.bssid)
+                else:
+                    bssid = None
+
+                current_counter = station_counters[src_mac]
+                dst_current_counter = station_counters[dst_mac]
+
+                if frame.to_ds and bssid:
+                    bssid_infra_macs[bssid].add(dst_mac)
+                    bssid_associated_macs[bssid].add(src_mac)
+                elif frame.from_ds and bssid:
+                    bssid_infra_macs[bssid].add(src_mac)
+                    bssid_associated_macs[bssid].add(dst_mac)
+
+                current_counter.data_throughput_out += len(frame.data_frame.data)
+                dst_current_counter.data_throughput_in += len(frame.data_frame.data)
+
+                current_counter.data_frame_count += 1
+                if frame.retry:
+                    current_counter.retry_frame_count += 1
+                if radio_tap_packet.ant_sig_present:
+                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
+                if radio_tap_packet.rate_present:
+                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
+                if radio_tap_packet.flags_present:
+                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+            else:
+                pass
+
+    time.sleep(10)
+
     pcap_offline_dev = pcapy.open_offline(capture_file)
     header, payload = pcap_offline_dev.next()
 
     while header:
         try:
             radio_tap_packet = dpkt.radiotap.Radiotap(payload)
+            procedure_logger.info("ANT SIG: {0}".format(radio_tap_packet))
             if radio_tap_packet.ant_noise_present:
                 noise_measurements.append(radio_tap_packet.ant_noise.db)
 
@@ -393,8 +518,16 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
 
 def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
                 verbose=False, sample_seconds=10, rounds=0, ignore_non_root=False,
-                db_timeout_seconds=60):
+                db_timeout_seconds=60, heartbeat_func=lambda: None, run_with_monitor=True):
+    setup_logging(log_file, verbose)
+    if run_with_monitor:
+        return run_monitored(run_capture, always_restart=False)(
+            wireless_interface, log_file, tmp_dir, database_loc,
+            verbose, sample_seconds, rounds, ignore_non_root,
+            db_timeout_seconds, run_with_monitor=False
+        )
     try:
+        heartbeat_func()
         effective_user_id = os.geteuid()
         if effective_user_id != 0 and ignore_non_root:
             procedure_logger.warning("Not running as root, attempting to proceed...")
@@ -403,8 +536,6 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
                 "This script requires root-level permissions to run. "
                 "Please either run as superuser or use the --ignore-non-root flag."
             )
-
-        setup_logging(log_file, verbose)
 
         run_forever = rounds == 0
 
@@ -425,12 +556,15 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
 
         procedure_logger.info("Beginning channel scan.")
 
+        heartbeat_func()
         current_round = 0
         while run_forever or rounds > 0:
+            heartbeat_func()
             procedure_logger.info("Executing capture round {0}".format(current_round))
             with transaction_wrapper(db_conn) as t:
                 kv_store_set(t, "capture/current_script_round", current_round)
             for channel in range(1, 12):
+                heartbeat_func()
                 procedure_logger.info("Changing to channel {0}".format(channel))
 
                 pyw.down(card)

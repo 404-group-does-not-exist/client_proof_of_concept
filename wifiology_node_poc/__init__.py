@@ -1,1 +1,1 @@
-LOG_FORMAT = "%(asctime)s %(levelname)-3s [%(module)s:%(lineno)d] %(message)s"
+LOG_FORMAT = "%(asctime)s %(levelname)-3s (PID: %(process)d) [%(module)s:%(lineno)d] %(message)s"
