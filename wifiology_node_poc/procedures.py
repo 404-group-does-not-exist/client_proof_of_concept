@@ -78,7 +78,6 @@ def binary_to_mac(bin):
     else:
         return ':'.join(("{:02x}".format(ord(c))) for c in bin)
 
-
 def calculate_beacon_jitter(timing_measurements, bssid):
     if not timing_measurements or len(timing_measurements) < 2:
         return None, None, None
@@ -125,7 +124,6 @@ def patched_network_stats(pkt):
             crypto.add("OPN")
     summary["crypto"] = list(crypto)
     return summary
-
 
 def has_bad_fcs(flags):
     if len(flags.data) > 0:
@@ -366,7 +364,6 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 elif frame.from_ds and bssid:
                     bssid_infra_macs[bssid].add(src_mac)
                     bssid_associated_macs[bssid].add(dst_mac)
-
                 current_counter.data_throughput_out += len(frame.data_frame.data)
                 dst_current_counter.data_throughput_in += len(frame.data_frame.data)
 
@@ -419,7 +416,6 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
             bssid_to_jitter_map[service_set.bssid] = (
                 jitter, bad_intervals, intervals
             )
-
     procedure_logger.info("-----------------")
     procedure_logger.info("Analysis performed on channel: {0}".format(channel))
     procedure_logger.info("Noise Level: {0} +/- {1} dBm".format(measurement.average_noise, measurement.std_dev_noise))
@@ -528,7 +524,6 @@ def run_capture(wireless_interface, log_file, tmp_dir, database_loc,
                 "This script requires root-level permissions to run. "
                 "Please either run as superuser or use the --ignore-non-root flag."
             )
-
         run_forever = rounds == 0
 
         db_conn = create_connection(database_loc, db_timeout_seconds)
@@ -643,7 +638,7 @@ def pull_and_upload_measurements(db_connection, remote_api_base_url, node_id, ap
 
             for j in jitter_measurements:
                 jitter_measurement_map[j.service_set_id] = j
-
+      
             bssid_to_network_name_map = {
                 ss.bssid: ss.nice_network_name for ss in service_sets if ss.nice_network_name
             }

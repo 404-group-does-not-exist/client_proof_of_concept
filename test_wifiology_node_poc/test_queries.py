@@ -14,6 +14,7 @@ from wifiology_node_poc.queries.core import write_schema, insert_measurement, \
     select_measurements_that_need_upload, update_measurements_upload_status, update_service_set_network_name, \
     delete_old_measurements
 
+
 from wifiology_node_poc.queries.kv import kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
 from wifiology_node_poc.models import Measurement, Station, ServiceSet, DataCounters
 
@@ -124,7 +125,6 @@ class QueriesUnitTest(TestCase):
             select_measurement_by_id(self.connection, new_measurement_2.measurement_id)
         )
         assert_that(new_measurement_2.to_api_response()).is_instance_of(dict)
-
 
         with transaction_wrapper(self.connection) as t:
             count = delete_old_measurements(t, 0)

@@ -273,6 +273,7 @@ class ServiceSet(RecordObject):
             'extraData': self.extra_data
         }
 
+
     def to_api_upload_payload(self, infra_mac_addresses=None, associated_mac_addresses=None, jitter_measurement=None):
         base_payload = {
             'serviceSetID': self.service_set_id,
@@ -529,7 +530,7 @@ DataCounters(
             base_payload['failedFCSCount'] = self.failed_fcs_count
         return base_payload
 
-
+      
 class ServiceSetJitterMeasurement(RecordObject):
     HISTOGRAM_OFFSET = 1*1000*1000
     HISTOGRAM_MIN = 1

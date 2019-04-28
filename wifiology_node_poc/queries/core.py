@@ -2,8 +2,8 @@ from wifiology_node_poc.core_sqlite import cursor_manager, load_raw_file
 from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters, ServiceSetJitterMeasurement
 from wifiology_node_poc.queries import limit_offset_helper, SQL_FOLDER, place_holder_generator
 
-
 import time
+
 
 def select_all_service_sets(connection, limit=None, offset=None):
     clause, params = limit_offset_helper(limit, offset)
@@ -35,6 +35,7 @@ def insert_service_set_infrastructure_station(transaction, measurement_id, servi
             WHERE s.macAddress=:mac AND ss.bssid=:bssid       
             """,
             {"measurementID": measurement_id, "mac": station_mac, "bssid": service_set_bssid}
+
         )
 
 
