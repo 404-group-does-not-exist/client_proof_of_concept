@@ -1,5 +1,5 @@
 from wifiology_node_poc.core_sqlite import cursor_manager, load_raw_file
-from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters
+from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters, ServiceSetJitterMeasurement
 from wifiology_node_poc.queries import limit_offset_helper, SQL_FOLDER, place_holder_generator
 
 
@@ -137,20 +137,6 @@ def select_stations_for_measurement(connection, measurement_id):
             Station.from_row(r, data_counters=DataCounters.from_row(r))
             for r in c.fetchall()
         ]
-
-
-# def insert_measurement_service_set(transaction, measurement_id, service_set_id):
-#     with cursor_manager(transaction) as c:
-#         c.execute(
-#             """
-#             INSERT INTO measurementServiceSetMap(
-#                mapMeasurementID, mapServiceSetID
-#             ) VALUES (
-#                ?, ?
-#             )
-#             """,
-#             (measurement_id, service_set_id)
-#         )
 
 
 def select_service_sets_for_measurement(connection, measurement_id):
@@ -339,6 +325,49 @@ def insert_station(transaction, new_radio_device):
             new_radio_device.to_row()
         )
         return c.lastrowid
+
+
+def insert_jitter_measurement(transaction, new_jitter_measurement):
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            INSERT INTO serviceSetJitterMeasurement(
+                measurementID, serviceSetID, minJitter, maxJitter, avgJitter, stdDevJitter, 
+                jitterHistogram, jitterHistogramOffset, interval, extraJSONData
+            ) VALUES (
+                :measurementID, :serviceSetID, :minJitter, :maxJitter, :avgJitter, :stdDevJitter,
+                :jitterHistogram, :jitterHistogramOffset, :interval, :extraJSONData
+            )
+            """,
+            new_jitter_measurement.to_row()
+        )
+
+
+def select_jitter_measurements_by_measurement_id(connection, measurement_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM serviceSetJitterMeasurement WHERE measurementID = :measurementID
+            """,
+            {"measurementID": measurement_id}
+        )
+        return [ServiceSetJitterMeasurement.from_row(row) for row in c.fetchall()]
+
+
+def select_jitter_measurement_by_measurement_id_and_service_set_id(connection, measurement_id, service_set_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM serviceSetJitterMeasurement
+            WHERE measurementID = :measurementID AND serviceSetID = :serviceSetID
+            """,
+            {"measurementID": measurement_id, "serviceSetID": service_set_id}
+        )
+        row = c.fetchone()
+        if row is not None:
+            return ServiceSetJitterMeasurement.from_row(row)
+        else:
+            return None
 
 
 def select_all_stations(connection, limit=None, offset=None):

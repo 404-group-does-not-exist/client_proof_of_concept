@@ -10,3 +10,4 @@ eventlet
 nose
 requests
 scapy
+hdrhistogram

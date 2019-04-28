@@ -5,7 +5,6 @@ import timerfd
 import select
 import requests
 from urllib.parse import urljoin
-from scapy.all import PcapReader
 from scapy.layers import dot11
 
 import argparse
@@ -13,6 +12,7 @@ import logging
 import time
 import functools
 import os
+from wifiology_node_poc.utils import altered_stddev, altered_mean
 from collections import defaultdict
 from bottle import json_dumps
 
@@ -24,10 +24,11 @@ from wifiology_node_poc.queries.core import write_schema, insert_measurement, in
     insert_service_set_associated_station, update_service_set_network_name, select_measurements_that_need_upload, \
     update_measurements_upload_status, select_stations_for_measurement, select_service_sets_for_measurement, \
     select_associated_mac_addresses_for_measurement_service_set, \
-    select_infrastructure_mac_addresses_for_measurement_service_set, delete_old_measurements
+    select_infrastructure_mac_addresses_for_measurement_service_set, delete_old_measurements, \
+    insert_jitter_measurement, select_jitter_measurements_by_measurement_id
 from wifiology_node_poc.queries.kv import kv_store_set, kv_store_get
 from wifiology_node_poc.models import Measurement, \
-    Station, ServiceSet, DataCounters
+    Station, ServiceSet, DataCounters, ServiceSetJitterMeasurement
 from wifiology_node_poc import LOG_FORMAT
 from wifiology_node_poc.watchdog import run_monitored
 
@@ -76,6 +77,54 @@ def binary_to_mac(bin):
         return ':'.join(("{:02x}".format(c)) for c in bin)
     else:
         return ':'.join(("{:02x}".format(ord(c))) for c in bin)
+
+
+def calculate_beacon_jitter(timing_measurements, bssid):
+    if not timing_measurements or len(timing_measurements) < 2:
+        return None, None, None
+    measurements, intervals = zip(*timing_measurements)
+    sorted_measurements = sorted(measurements)
+    intervals = list(set(intervals))
+    if len(intervals) > 1:
+        procedure_logger.warning(
+            "BSSID {0} has multiple reported intervals! Something funny is going on...".format(bssid)
+        )
+        procedure_logger.warning("Intervals seen: {0}".format(intervals))
+        bad_intervals = True
+    else:
+        bad_intervals = False
+    chosen_interval = intervals[0]
+    jitter = [
+        (sorted_measurements[i] - sorted_measurements[i-1]) - (chosen_interval*1024)
+        for i in range(1, len(sorted_measurements))
+    ]
+    return jitter, bad_intervals, intervals
+
+
+def patched_network_stats(pkt):
+    summary = {}
+    crypto = set()
+    p = pkt.payload
+    while isinstance(p, dot11.Dot11Elt):
+        if p.ID == 0:
+            summary["ssid"] = dot11.plain_str(p.info)
+        elif p.ID == 3:
+            summary["channel"] = ord(p.info)
+        elif isinstance(p, dot11.Dot11EltRates):
+            summary["rates"] = p.rates
+        elif isinstance(p, dot11.Dot11EltRSN):
+            crypto.add("WPA2")
+        elif p.ID == 221:
+            if isinstance(p, dot11.Dot11EltMicrosoftWPA):
+                crypto.add("WPA")
+        p = p.payload
+    if not crypto:
+        if pkt.cap.privacy:
+            crypto.add("WEP")
+        else:
+            crypto.add("OPN")
+    summary["crypto"] = list(crypto)
+    return summary
 
 
 def has_bad_fcs(flags):
@@ -179,143 +228,28 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     bssid_to_ssid_map = {}
     bssid_infra_macs = defaultdict(set)
     bssid_associated_macs = defaultdict(set)
+    bssid_beacon_timing_payloads = defaultdict(list)
+    bssid_beacon_data = {}
+    bssid_to_jitter_map = {}
 
     noise_measurements = []
+    action_counter = 0
+    probe_req_counter = 0
 
     station_counters = defaultdict(DataCounters.zero)
-
-    for packet in PcapReader(capture_file):
-            radiotap_frame = packet.getlayer(dot11.RadioTap)
-            wifi_frame = radiotap_frame.payload
-            wifi_frame.show()
-            if radiotap_frame.dBm_AntNoise is not None:
-                noise_measurements.append(radiotap_frame.dBm_AntNoise)
-
-            frame_type = wifi_frame.type
-            frame_subtype = wifi_frame.subtype
-
-            if frame_type == 'Management':
-                mac = binary_to_mac(frame.mgmt.src)
-                current_counter = station_counters[mac]
-                current_counter.management_frame_count += 1
-
-                if frame_subtype == dpkt.ieee80211.M_BEACON:
-                    if hasattr(frame, 'ssid'):
-                        bssid = binary_to_mac(frame.mgmt.bssid)
-                        bssid_to_ssid_map[bssid] = frame.ssid.data
-                        bssid_infra_macs[bssid].add(mac)
-
-                if frame_subtype == dpkt.ieee80211.M_PROBE_RESP:
-                    if hasattr(frame, 'ssid'):
-                        bssid = binary_to_mac(frame.mgmt.bssid)
-                        bssid_to_ssid_map[bssid] = frame.ssid.data
-                        bssid_infra_macs[bssid].add(mac)
-
-                if frame_subtype in (dpkt.ieee80211.M_ASSOC_REQ, dpkt.ieee80211.M_ASSOC_RESP):
-                    current_counter.association_frame_count += 1
-                if frame_subtype in (dpkt.ieee80211.M_REASSOC_REQ, dpkt.ieee80211.M_REASSOC_RESP):
-                    current_counter.reassociation_frame_count += 1
-                if frame_subtype == dpkt.ieee80211.M_DISASSOC:
-                    current_counter.disassociation_frame_count += 1
-                if frame.retry:
-                    current_counter.retry_frame_count += 1
-                if radio_tap_packet.ant_sig_present:
-                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                if radio_tap_packet.rate_present:
-                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                if radio_tap_packet.flags_present:
-                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
-
-            elif frame_type == 'Control':
-                include_in_extra_measurements = True
-
-                if frame_subtype == dpkt.ieee80211.C_RTS:
-                    mac = binary_to_mac(frame.rts.src)
-                    current_counter = station_counters[mac]
-                    current_counter.cts_frame_count += 1
-
-                elif frame_subtype == dpkt.ieee80211.C_CTS:
-                    mac = binary_to_mac(frame.cts.dst)
-                    include_in_extra_measurements = False
-                    current_counter = station_counters[mac]
-                    current_counter.rts_frame_count += 1
-
-                elif frame_subtype == dpkt.ieee80211.C_ACK:
-                    mac = binary_to_mac(frame.ack.dst)
-                    include_in_extra_measurements = False
-                    current_counter = station_counters[mac]
-                    current_counter.ack_frame_count += 1
-
-                elif frame_subtype == dpkt.ieee80211.C_BLOCK_ACK:
-                    mac = binary_to_mac(frame.back.src)
-                    current_counter = station_counters[mac]
-
-                elif frame_subtype == dpkt.ieee80211.C_BLOCK_ACK_REQ:
-                    mac = binary_to_mac(frame.bar.src)
-                    current_counter = station_counters[mac]
-
-                elif frame_subtype == dpkt.ieee80211.C_CF_END:
-                    mac = binary_to_mac(frame.cf_end.src)
-                    current_counter = station_counters[mac]
-                else:
-                    continue
-                if frame.retry:
-                    current_counter.retry_frame_count += 1
-                if include_in_extra_measurements:
-                    current_counter.control_frame_count += 1
-                    if radio_tap_packet.ant_sig_present:
-                        current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                    if radio_tap_packet.rate_present:
-                        current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                    if radio_tap_packet.flags_present:
-                        current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
-
-            elif frame_type == 'Data':
-                src_mac = binary_to_mac(frame.data_frame.src)
-                dst_mac = binary_to_mac(frame.data_frame.dst)
-                if hasattr(frame.data_frame, 'bssid'):
-                    bssid = binary_to_mac(frame.data_frame.bssid)
-                else:
-                    bssid = None
-
-                current_counter = station_counters[src_mac]
-                dst_current_counter = station_counters[dst_mac]
-
-                if frame.to_ds and bssid:
-                    bssid_infra_macs[bssid].add(dst_mac)
-                    bssid_associated_macs[bssid].add(src_mac)
-                elif frame.from_ds and bssid:
-                    bssid_infra_macs[bssid].add(src_mac)
-                    bssid_associated_macs[bssid].add(dst_mac)
-
-                current_counter.data_throughput_out += len(frame.data_frame.data)
-                dst_current_counter.data_throughput_in += len(frame.data_frame.data)
-
-                current_counter.data_frame_count += 1
-                if frame.retry:
-                    current_counter.retry_frame_count += 1
-                if radio_tap_packet.ant_sig_present:
-                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                if radio_tap_packet.rate_present:
-                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                if radio_tap_packet.flags_present:
-                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
-            else:
-                pass
-
-    time.sleep(10)
 
     pcap_offline_dev = pcapy.open_offline(capture_file)
     header, payload = pcap_offline_dev.next()
 
     while header:
         try:
-            radio_tap_packet = dpkt.radiotap.Radiotap(payload)
-            procedure_logger.info("ANT SIG: {0}".format(radio_tap_packet))
-            if radio_tap_packet.ant_noise_present:
-                noise_measurements.append(radio_tap_packet.ant_noise.db)
+            # Use Scapy for the RadioTap decoding as dpkt's Radiotap decoder is totally broken.
+            radiotap_frame = dot11.RadioTap(payload)
 
-            frame = radio_tap_packet.data
+            if radiotap_frame.dBm_AntNoise is not None:
+                noise_measurements.append(radiotap_frame.dBm_AntNoise)
+
+            frame = dpkt.radiotap.Radiotap(payload).data
             frame_type = frame.type
             frame_subtype = frame.subtype
 
@@ -325,10 +259,26 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 current_counter.management_frame_count += 1
 
                 if frame_subtype == dpkt.ieee80211.M_BEACON:
+                    beacon = dot11.Dot11Beacon(frame.beacon.pack())
+                    bssid = binary_to_mac(frame.mgmt.bssid)
+
+                    try:
+                        beacon_data = bssid_beacon_data[bssid] = patched_network_stats(beacon)
+                        target_channel = beacon_data.get("channel")
+                    except:
+                        procedure_logger.exception("Failed to decode network stats...")
+                        target_channel = None
+
                     if hasattr(frame, 'ssid'):
-                        bssid = binary_to_mac(frame.mgmt.bssid)
                         bssid_to_ssid_map[bssid] = frame.ssid.data
                         bssid_infra_macs[bssid].add(mac)
+                    if target_channel is None or target_channel == channel:
+                        bssid_beacon_timing_payloads[bssid].append((beacon.timestamp, beacon.beacon_interval))
+                    else:
+                        procedure_logger.warning(
+                            "Off channel beacon ({0} vs {1}) seen for BSSID {2}"
+                            "".format(target_channel, channel, bssid)
+                        )
 
                 if frame_subtype == dpkt.ieee80211.M_PROBE_RESP:
                     if hasattr(frame, 'ssid'):
@@ -342,14 +292,18 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                     current_counter.reassociation_frame_count += 1
                 if frame_subtype == dpkt.ieee80211.M_DISASSOC:
                     current_counter.disassociation_frame_count += 1
+                if frame_subtype == dpkt.ieee80211.M_ACTION:
+                    action_counter += 1
+                if frame_subtype == dpkt.ieee80211.M_PROBE_REQ:
+                    probe_req_counter += 1
                 if frame.retry:
                     current_counter.retry_frame_count += 1
-                if radio_tap_packet.ant_sig_present:
-                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                if radio_tap_packet.rate_present:
-                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                if radio_tap_packet.flags_present:
-                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+                if radiotap_frame.dBm_AntSignal is not None:
+                    current_counter.power_measurements.append(radiotap_frame.dBm_AntSignal)
+                if radiotap_frame.Rate is not None:
+                    current_counter.rate_measurements.append(radiotap_frame.Rate)
+                if radiotap_frame.Flags.badFCS is not None:
+                    current_counter.failed_fcs_count += (1 if radiotap_frame.Flags.badFCS else 0)
 
             elif frame_type == dpkt.ieee80211.CTL_TYPE:
                 include_in_extra_measurements = True
@@ -388,12 +342,12 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                     current_counter.retry_frame_count += 1
                 if include_in_extra_measurements:
                     current_counter.control_frame_count += 1
-                    if radio_tap_packet.ant_sig_present:
-                        current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                    if radio_tap_packet.rate_present:
-                        current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                    if radio_tap_packet.flags_present:
-                        current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+                    if radiotap_frame.dBm_AntSignal is not None:
+                        current_counter.power_measurements.append(radiotap_frame.dBm_AntSignal)
+                    if radiotap_frame.Rate is not None:
+                        current_counter.rate_measurements.append(radiotap_frame.Rate)
+                    if radiotap_frame.Flags.badFCS is not None:
+                        current_counter.failed_fcs_count += (1 if radiotap_frame.Flags.badFCS else 0)
 
             elif frame_type == dpkt.ieee80211.DATA_TYPE:
                 src_mac = binary_to_mac(frame.data_frame.src)
@@ -419,12 +373,12 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                 current_counter.data_frame_count += 1
                 if frame.retry:
                     current_counter.retry_frame_count += 1
-                if radio_tap_packet.ant_sig_present:
-                    current_counter.power_measurements.append(radio_tap_packet.ant_sig.db)
-                if radio_tap_packet.rate_present:
-                    current_counter.rate_measurements.append(radio_tap_packet.rate.val)
-                if radio_tap_packet.flags_present:
-                    current_counter.failed_fcs_count += (1 if has_bad_fcs(radio_tap_packet.flags) else 0)
+                if radiotap_frame.dBm_AntSignal is not None:
+                    current_counter.power_measurements.append(radiotap_frame.dBm_AntSignal)
+                if radiotap_frame.Rate is not None:
+                    current_counter.rate_measurements.append(radiotap_frame.Rate)
+                if radiotap_frame.Flags.badFCS is not None:
+                    current_counter.failed_fcs_count += (1 if radiotap_frame.Flags.badFCS else 0)
             else:
                 pass
 
@@ -454,16 +408,44 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     ]
 
     service_sets = [
-        ServiceSet.new(bssid, network_name=bssid_to_ssid_map.get(bssid))
+        ServiceSet.new(bssid, network_name=bssid_to_ssid_map.get(bssid), extra_data=bssid_beacon_data.get(bssid, {}))
         for bssid in set(bssid_infra_macs.keys()).union(set(bssid_associated_macs.keys()))
     ]
+    for service_set in service_sets:
+        jitter, bad_intervals, intervals = calculate_beacon_jitter(
+            bssid_beacon_timing_payloads.get(service_set.bssid), service_set.bssid
+        )
+        if jitter is not None:
+            bssid_to_jitter_map[service_set.bssid] = (
+                jitter, bad_intervals, intervals
+            )
+
     procedure_logger.info("-----------------")
     procedure_logger.info("Analysis performed on channel: {0}".format(channel))
     procedure_logger.info("Noise Level: {0} +/- {1} dBm".format(measurement.average_noise, measurement.std_dev_noise))
     procedure_logger.info("Top level result:\n{0}".format(repr(measurement.data_counters)))
-    procedure_logger.info("Service Sets seen:")
-    for service_set in service_sets:
-        procedure_logger.info("-- {0} ({1})".format(service_set.bssid, service_set.network_name))
+    procedure_logger.info("Action Frames: {0}".format(action_counter))
+    procedure_logger.info("Probe Request Frames: {0}".format(probe_req_counter))
+    if service_sets:
+        procedure_logger.info("Service Sets seen:")
+        for service_set in service_sets:
+            jitter, bad_intervals, intervals = bssid_to_jitter_map.get(service_set.bssid, (None, None, None))
+            procedure_logger.info("-- {0} ({1})".format(service_set.bssid, service_set.network_name))
+            if bad_intervals:
+                procedure_logger.info("---- Changing intervals detected!!!")
+                procedure_logger.info("---- Intervals Seen: {0}".format(intervals))
+            if jitter:
+                procedure_logger.info(
+                    "---- Avg +/- StdDev Beacon Jitter: {0} +/- {1} (ms)".format(
+                        altered_mean(jitter)/1000.0, altered_stddev(jitter)/1000.0
+                    )
+                )
+                procedure_logger.info(
+                    "---- Min/Max Beacon Jitter: {0}/{1} (ms)".format(
+                         min(jitter)/1000.0, max(jitter)/1000.0
+                    )
+                )
+                procedure_logger.info("---- Jitter Count: {0}".format(len(jitter)))
     procedure_logger.info("{0} unique stations seen.".format(len(stations)))
     procedure_logger.info("-----------------")
     return {
@@ -473,7 +455,8 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
         'station_counters': station_counters,
         'bssid_associated_macs': bssid_associated_macs,
         'bssid_infra_macs': bssid_infra_macs,
-        'bssid_to_ssid_map': bssid_to_ssid_map
+        'bssid_to_ssid_map': bssid_to_ssid_map,
+        'bssid_to_jitter_map': bssid_to_jitter_map
     }
 
 
@@ -485,6 +468,7 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
     bssid_associated_macs = analysis_data['bssid_associated_macs']
     bssid_infra_macs = analysis_data['bssid_infra_macs']
     bssid_to_ssid_map = analysis_data['bssid_to_ssid_map']
+    bssid_to_jitter_map = analysis_data['bssid_to_jitter_map']
 
     with transaction_wrapper(db_conn) as t:
         measurement.measurement_id = insert_measurement(
@@ -505,6 +489,14 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
                 service_set.service_set_id = opt_service_set.service_set_id
             else:
                 service_set.service_set_id = insert_service_set(t, service_set)
+            if service_set.bssid in bssid_to_jitter_map:
+                jitter, bad_intervals, intervals = bssid_to_jitter_map[service_set.bssid]
+                insert_jitter_measurement(
+                    t, ServiceSetJitterMeasurement.new(
+                        measurement.measurement_id, service_set.service_set_id, jitter,
+                        intervals[0], {'bad_intervals': bad_intervals}
+                    )
+                )
         for bssid, infra_macs in bssid_infra_macs.items():
             for mac in infra_macs:
                 insert_service_set_infrastructure_station(t, measurement.measurement_id, bssid, mac)
@@ -638,6 +630,8 @@ def pull_and_upload_measurements(db_connection, remote_api_base_url, node_id, ap
             service_sets = select_service_sets_for_measurement(t, measurement.measurement_id)
             infra_macs_map = {}
             associated_macs_map = {}
+            jitter_measurements = select_jitter_measurements_by_measurement_id(t, measurement.measurement_id)
+            jitter_measurement_map = {}
 
             for ss in service_sets:
                 infra_macs_map[ss.service_set_id] = select_infrastructure_mac_addresses_for_measurement_service_set(
@@ -647,6 +641,9 @@ def pull_and_upload_measurements(db_connection, remote_api_base_url, node_id, ap
                     t, measurement.measurement_id, ss.service_set_id
                 )
 
+            for j in jitter_measurements:
+                jitter_measurement_map[j.service_set_id] = j
+
             bssid_to_network_name_map = {
                 ss.bssid: ss.nice_network_name for ss in service_sets if ss.nice_network_name
             }
@@ -655,7 +652,11 @@ def pull_and_upload_measurements(db_connection, remote_api_base_url, node_id, ap
             upload_data = measurement.to_api_upload_payload(
                 [s.to_api_upload_payload() for s in stations],
                 [
-                    ss.to_api_upload_payload(infra_macs_map[ss.service_set_id], associated_macs_map[ss.service_set_id])
+                    ss.to_api_upload_payload(
+                        infra_macs_map[ss.service_set_id],
+                        associated_macs_map[ss.service_set_id],
+                        jitter_measurement_map.get(ss.service_set_id)
+                    )
                     for ss in service_sets
                 ],
                 bssid_to_network_name_map
