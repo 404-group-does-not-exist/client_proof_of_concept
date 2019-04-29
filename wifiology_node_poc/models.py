@@ -641,6 +641,6 @@ class ServiceSetJitterMeasurement(RecordObject):
             "stdDevJitter": self.std_dev_jitter,
             "jitterHistogram": self.jitter_histogram.encode().decode('ascii') if self.jitter_histogram else None,
             "jitterHistogramOffset": self.jitter_histogram_offset,
-            "interval": self.interval,
+            "beaconInterval": self.interval,
             'extraData': self.extra_data
         }
