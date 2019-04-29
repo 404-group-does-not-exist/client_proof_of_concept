@@ -1,4 +1,5 @@
 import statistics
+import string
 
 
 def altered_mean(data):
@@ -22,8 +23,10 @@ def altered_stddev(data):
 def bytes_to_str(b):
     if isinstance(b, (bytes, bytearray)):
         try:
-            result = b.decode('utf-8')
-        except Exception:
+            result = b.decode('ascii')
+            if not all(c in string.printable for c in result):
+                result = repr(b)[2:-1]
+        except:
             result = repr(b)[2:-1]
     else:
         result = b

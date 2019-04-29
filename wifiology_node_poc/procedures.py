@@ -109,7 +109,14 @@ def patched_network_stats(pkt):
         if p.ID == 0:
             summary["ssid"] = bytes_to_str(p.info)
         elif p.ID == 3:
-            summary["channel"] = ord(p.info)
+            summary["channel"] = p.info[0]
+        elif p.ID == 7:
+            summary["country"] = bytes_to_str(p.info[0:2])
+        elif p.ID == 33:
+            summary["power_capability"] = {
+                "min": p.info[0],
+                "max": p.info[1]
+            }
         elif isinstance(p, dot11.Dot11EltRates):
             summary["rates"] = p.rates
         elif isinstance(p, dot11.Dot11EltRSN):
@@ -125,6 +132,7 @@ def patched_network_stats(pkt):
             crypto.add("OPN")
     summary["crypto"] = list(crypto)
     return summary
+
 
 def has_bad_fcs(flags):
     if len(flags.data) > 0:
@@ -230,6 +238,7 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
     bssid_beacon_timing_payloads = defaultdict(list)
     bssid_beacon_data = {}
     bssid_to_jitter_map = {}
+    bssid_to_power_map = defaultdict(list)
 
     noise_measurements = []
     action_counter = 0
@@ -273,6 +282,8 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
                         bssid_infra_macs[bssid].add(mac)
                     if target_channel is None or target_channel == channel:
                         bssid_beacon_timing_payloads[bssid].append((beacon.timestamp, beacon.beacon_interval))
+                        if radiotap_frame.dBm_AntSignal is not None:
+                            bssid_to_power_map[bssid].append(radiotap_frame.dBm_AntSignal)
                     else:
                         procedure_logger.warning(
                             "Off channel beacon ({0} vs {1}) seen for BSSID {2}"
@@ -453,7 +464,8 @@ def run_offline_analysis(capture_file, start_time, end_time, sample_seconds, cha
         'bssid_associated_macs': bssid_associated_macs,
         'bssid_infra_macs': bssid_infra_macs,
         'bssid_to_ssid_map': bssid_to_ssid_map,
-        'bssid_to_jitter_map': bssid_to_jitter_map
+        'bssid_to_jitter_map': bssid_to_jitter_map,
+        'bssid_to_power_map': bssid_to_power_map
     }
 
 
@@ -466,6 +478,7 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
     bssid_infra_macs = analysis_data['bssid_infra_macs']
     bssid_to_ssid_map = analysis_data['bssid_to_ssid_map']
     bssid_to_jitter_map = analysis_data['bssid_to_jitter_map']
+    bssid_to_power_map = analysis_data['bssid_to_power_map']
 
     with transaction_wrapper(db_conn) as t:
         measurement.measurement_id = insert_measurement(
@@ -491,7 +504,10 @@ def write_offline_analysis_to_database(db_conn, analysis_data):
                 insert_jitter_measurement(
                     t, ServiceSetJitterMeasurement.new(
                         measurement.measurement_id, service_set.service_set_id, jitter,
-                        intervals[0], {'bad_intervals': bad_intervals}
+                        intervals[0], {
+                            'bad_intervals': bad_intervals,
+                            'average_power': altered_mean(bssid_to_power_map.get(service_set.bssid, []))
+                        }
                     )
                 )
         for bssid, infra_macs in bssid_infra_macs.items():
