@@ -35,6 +35,22 @@ CREATE TABLE IF NOT EXISTS serviceSet(
   extraJSONData TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS serviceSetJitterMeasurement(
+  measurementID INTEGER NOT NULL REFERENCES measurement(measurementID) ON DELETE CASCADE,
+  serviceSetID INTEGER NOT NULL REFERENCES serviceSet(serviceSetID) ON DELETE CASCADE,
+  minJitter REAL,
+  maxJitter REAL,
+  avgJitter REAL,
+  stdDevJitter REAL,
+  jitterHistogram BLOB,
+  jitterHistogramOffset REAL,
+  interval INTEGER,
+  extraJSONData TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(measurementID, serviceSetID)
+);
+CREATE INDEX IF NOT EXISTS serviceSetJitterMeasurement_measurement_IDX ON serviceSetJitterMeasurement(measurementID);
+CREATE INDEX IF NOT EXISTS serviceSetJitterMeasurement_measurement_serviceSet_IDX ON serviceSetJitterMeasurement(measurementID, serviceSetID);
+
 CREATE INDEX IF NOT EXISTS serviceSetNetworkName_IDX ON serviceSet(networkName);
 
 CREATE TABLE IF NOT EXISTS infrastructureStationServiceSetMap(

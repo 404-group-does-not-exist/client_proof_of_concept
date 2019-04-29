@@ -11,7 +11,9 @@ from wifiology_node_poc.queries.core import write_schema, insert_measurement, \
     insert_service_set_associated_station, select_associated_stations_for_service_set, \
     select_associated_mac_addresses_for_measurement_service_set, \
     select_infrastructure_mac_addresses_for_measurement_service_set, \
-    select_measurements_that_need_upload, update_measurements_upload_status, update_service_set_network_name
+    select_measurements_that_need_upload, update_measurements_upload_status, update_service_set_network_name, \
+    delete_old_measurements
+
 
 from wifiology_node_poc.queries.kv import kv_store_del, kv_store_get, kv_store_get_all, kv_store_set, kv_store_get_prefix
 from wifiology_node_poc.models import Measurement, Station, ServiceSet, DataCounters
@@ -123,6 +125,11 @@ class QueriesUnitTest(TestCase):
             select_measurement_by_id(self.connection, new_measurement_2.measurement_id)
         )
         assert_that(new_measurement_2.to_api_response()).is_instance_of(dict)
+
+        with transaction_wrapper(self.connection) as t:
+            count = delete_old_measurements(t, 0)
+        assert_that(count).is_equal_to(2)
+        assert_that(select_all_measurements(self.connection, limit=500, offset=0)).is_empty()
 
     def test_station_crud(self):
         new_station = Station.new(

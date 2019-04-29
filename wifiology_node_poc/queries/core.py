@@ -1,6 +1,8 @@
 from wifiology_node_poc.core_sqlite import cursor_manager, load_raw_file
-from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters
+from wifiology_node_poc.models import ServiceSet, Station, Measurement, DataCounters, ServiceSetJitterMeasurement
 from wifiology_node_poc.queries import limit_offset_helper, SQL_FOLDER, place_holder_generator
+
+import time
 
 
 def select_all_service_sets(connection, limit=None, offset=None):
@@ -28,11 +30,12 @@ def insert_service_set_infrastructure_station(transaction, measurement_id, servi
             """
             INSERT INTO infrastructureStationServiceSetMap(
                mapStationID, mapServiceSetID, measurementID
-            ) SELECT s.stationID, ss.serviceSetID, ?
+            ) SELECT s.stationID, ss.serviceSetID, :measurementID
             FROM station AS s, serviceSet AS ss
-            WHERE s.macAddress=? AND ss.bssid = ?       
+            WHERE s.macAddress=:mac AND ss.bssid=:bssid       
             """,
-            (measurement_id, station_mac, service_set_bssid)
+            {"measurementID": measurement_id, "mac": station_mac, "bssid": service_set_bssid}
+
         )
 
 
@@ -42,11 +45,11 @@ def insert_service_set_associated_station(transaction, measurement_id, service_s
             """
             INSERT INTO associationStationServiceSetMap(
                associatedStationID, associatedServiceSetID, measurementID
-            ) SELECT s.stationID, ss.serviceSetID, ?
+            ) SELECT s.stationID, ss.serviceSetID, :measurementID
             FROM station AS s, serviceSet AS ss
-            WHERE s.macAddress=? AND ss.bssid = ?    
+            WHERE s.macAddress=:mac AND ss.bssid=:bssid    
             """,
-            (measurement_id, station_mac, service_set_bssid)
+            {"measurementID": measurement_id, "mac": station_mac, "bssid": service_set_bssid}
         )
 
 
@@ -137,25 +140,11 @@ def select_stations_for_measurement(connection, measurement_id):
         ]
 
 
-# def insert_measurement_service_set(transaction, measurement_id, service_set_id):
-#     with cursor_manager(transaction) as c:
-#         c.execute(
-#             """
-#             INSERT INTO measurementServiceSetMap(
-#                mapMeasurementID, mapServiceSetID
-#             ) VALUES (
-#                ?, ?
-#             )
-#             """,
-#             (measurement_id, service_set_id)
-#         )
-
-
 def select_service_sets_for_measurement(connection, measurement_id):
     with cursor_manager(connection) as c:
         c.execute(
           """
-          SELECT s.* 
+          SELECT DISTINCT s.* 
           FROM serviceSet as s
           WHERE EXISTS (
             SELECT 1 FROM associationStationServiceSetMap AS a 
@@ -339,6 +328,49 @@ def insert_station(transaction, new_radio_device):
         return c.lastrowid
 
 
+def insert_jitter_measurement(transaction, new_jitter_measurement):
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            INSERT INTO serviceSetJitterMeasurement(
+                measurementID, serviceSetID, minJitter, maxJitter, avgJitter, stdDevJitter, 
+                jitterHistogram, jitterHistogramOffset, interval, extraJSONData
+            ) VALUES (
+                :measurementID, :serviceSetID, :minJitter, :maxJitter, :avgJitter, :stdDevJitter,
+                :jitterHistogram, :jitterHistogramOffset, :interval, :extraJSONData
+            )
+            """,
+            new_jitter_measurement.to_row()
+        )
+
+
+def select_jitter_measurements_by_measurement_id(connection, measurement_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM serviceSetJitterMeasurement WHERE measurementID = :measurementID
+            """,
+            {"measurementID": measurement_id}
+        )
+        return [ServiceSetJitterMeasurement.from_row(row) for row in c.fetchall()]
+
+
+def select_jitter_measurement_by_measurement_id_and_service_set_id(connection, measurement_id, service_set_id):
+    with cursor_manager(connection) as c:
+        c.execute(
+            """
+            SELECT * FROM serviceSetJitterMeasurement
+            WHERE measurementID = :measurementID AND serviceSetID = :serviceSetID
+            """,
+            {"measurementID": measurement_id, "serviceSetID": service_set_id}
+        )
+        row = c.fetchone()
+        if row is not None:
+            return ServiceSetJitterMeasurement.from_row(row)
+        else:
+            return None
+
+
 def select_all_stations(connection, limit=None, offset=None):
     clause, params = limit_offset_helper(limit, offset)
 
@@ -430,3 +462,15 @@ def select_associated_mac_addresses_for_measurement_service_set(connection, meas
             {"measurementID": measurement_id, "serviceSetID": service_set_id}
         )
         return [r["macAddress"] for r in c.fetchall()]
+
+
+def delete_old_measurements(transaction, days_old):
+    start_time = time.time() - (60*60*24*days_old)
+    with cursor_manager(transaction) as c:
+        c.execute(
+            """
+            DELETE FROM measurement WHERE measurementStartTime < ?
+            """,
+            [start_time]
+        )
+        return c.rowcount

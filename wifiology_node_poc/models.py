@@ -1,25 +1,9 @@
 import inspect
-import statistics
 import math
 from bottle import json_dumps, json_loads
+from hdrh.histogram import HdrHistogram, HdrHistogramEncoder
 
-
-def altered_mean(data):
-    if not data:
-        return None
-    elif len(data) == 1:
-        return data[0]
-    else:
-        return statistics.mean(data)
-
-
-def altered_stddev(data):
-    if not data:
-        return None
-    elif len(data) == 1:
-        return 0.0
-    else:
-        return statistics.stdev(data)
+from wifiology_node_poc.utils import altered_mean, altered_stddev
 
 
 def bytes_to_str(b):
@@ -289,7 +273,8 @@ class ServiceSet(RecordObject):
             'extraData': self.extra_data
         }
 
-    def to_api_upload_payload(self, infra_mac_addresses=None, associated_mac_addresses=None):
+
+    def to_api_upload_payload(self, infra_mac_addresses=None, associated_mac_addresses=None, jitter_measurement=None):
         base_payload = {
             'serviceSetID': self.service_set_id,
             'bssid': self.bssid,
@@ -301,6 +286,8 @@ class ServiceSet(RecordObject):
             base_payload["infrastructureMacAddresses"] = infra_mac_addresses
         if associated_mac_addresses is not None:
             base_payload["associatedMacAddresses"] = associated_mac_addresses
+        if jitter_measurement is not None:
+            base_payload["jitterMeasurement"] = jitter_measurement.to_api_upload_payload()
         return base_payload
 
 
@@ -542,3 +529,118 @@ DataCounters(
         if self.failed_fcs_count is not None:
             base_payload['failedFCSCount'] = self.failed_fcs_count
         return base_payload
+
+      
+class ServiceSetJitterMeasurement(RecordObject):
+    HISTOGRAM_OFFSET = 1*1000*1000
+    HISTOGRAM_MIN = 1
+    HISTOGRAM_MAX = 5*1000*1000
+    SIG_FIGS = 5
+
+    def __init__(self, measurement_id, service_set_id, min_jitter, max_jitter,
+                 avg_jitter, std_dev_jitter, jitter_histogram, jitter_histogram_offset, interval, extra_data=None):
+        self.measurement_id = measurement_id
+        self.service_set_id = service_set_id
+        self.min_jitter = min_jitter
+        self.max_jitter = max_jitter
+        self.avg_jitter = avg_jitter
+        self.std_dev_jitter = std_dev_jitter
+        self.jitter_histogram = jitter_histogram
+        self.jitter_histogram_offset = jitter_histogram_offset
+        self.interval = interval
+        self.extra_data = extra_data or {}
+
+    def __repr__(self):
+        return "ServiceSetJitterMeasurement(measurementID={0}, serviceSetID={1}, minJitter={2}, " \
+               "maxJitter={3}, avgJitter={4}, stdDevJitter={5}, interval={6})".format(
+                    self.measurement_id, self.service_set_id, self.min_jitter, self.max_jitter,
+                    self.avg_jitter, self.std_dev_jitter, self.interval
+               )
+
+    @classmethod
+    def from_row(cls, row, prefix=""):
+        if row is None:
+            return None
+        else:
+            raw_histo = row[prefix + "jitterHistogram"]
+            return cls(
+                row[prefix + "measurementID"],
+                row[prefix + "serviceSetID"],
+                row[prefix + "minJitter"],
+                row[prefix + "maxJitter"],
+                row[prefix + "avgJitter"],
+                row[prefix + "stdDevJitter"],
+                HdrHistogram.decode(raw_histo, b64_wrap=False) if raw_histo else None,
+                row[prefix + "jitterHistogramOffset"],
+                row[prefix + "interval"],
+                cls._json_loads(row[prefix + "extraJSONData"])
+            )
+
+    @classmethod
+    def generate_histogram(cls, jitter_measurements, offset):
+        histogram = HdrHistogram(cls.HISTOGRAM_MIN, cls.HISTOGRAM_MAX, cls.SIG_FIGS)
+        for m in jitter_measurements:
+            if (m + offset) >= 1:
+                histogram.record_value((m + offset))
+        return histogram
+
+    @classmethod
+    def new(cls, measurement_id, service_set_id, jitter_measurements, interval,
+            include_histogram=True, extra_data=None):
+        if include_histogram:
+            offset = cls.HISTOGRAM_OFFSET
+            histogram = cls.generate_histogram(jitter_measurements, offset)
+        else:
+            offset = None
+            histogram = None
+        return cls(
+            measurement_id, service_set_id, min(jitter_measurements),
+            max(jitter_measurements), altered_mean(jitter_measurements),
+            altered_stddev(jitter_measurements), histogram, offset, interval, extra_data=extra_data
+        )
+
+    def to_row(self, prefix=""):
+        try:
+            if self.jitter_histogram:
+                self.jitter_histogram.encoder.b64_wrap = False
+            return {
+                prefix + "measurementID": self.measurement_id,
+                prefix + "serviceSetID": self.service_set_id,
+                prefix + "minJitter": self.min_jitter,
+                prefix + "maxJitter": self.max_jitter,
+                prefix + "avgJitter": self.avg_jitter,
+                prefix + "stdDevJitter": self.std_dev_jitter,
+                prefix + "jitterHistogram": self.jitter_histogram.encode() if self.jitter_histogram else None,
+                prefix + "jitterHistogramOffset": self.jitter_histogram_offset,
+                prefix + "interval": self.interval,
+                prefix + 'extraJSONData': self._json_dumps(self.extra_data)
+            }
+        finally:
+            if self.jitter_histogram:
+                self.jitter_histogram.encoder.b64_wrap = True
+
+    def to_api_response(self):
+        return {
+            "measurementID": self.measurement_id,
+            "serviceSetID": self.service_set_id,
+            "minJitter": self.min_jitter,
+            "maxJitter": self.max_jitter,
+            "avgJitter": self.avg_jitter,
+            "stdDevJitter": self.std_dev_jitter,
+            "jitterHistogram": self.jitter_histogram.encode().decode('ascii') if self.jitter_histogram else None,
+            "jitterHistogramOffset": self.jitter_histogram_offset,
+            "interval": self.interval,
+            'extraJSONData': self.extra_data
+        }
+
+    def to_api_upload_payload(self):
+        return {
+            "minJitter": self.min_jitter,
+            "maxJitter": self.max_jitter,
+            "avgJitter": self.avg_jitter,
+            "stdDevJitter": self.std_dev_jitter,
+            "jitterHistogram": self.jitter_histogram.encode().decode('ascii') if self.jitter_histogram else None,
+            "jitterHistogramOffset": self.jitter_histogram_offset,
+            "interval": self.interval,
+            'extraJSONData': self.extra_data
+        }
