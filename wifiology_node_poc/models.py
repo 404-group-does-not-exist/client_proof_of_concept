@@ -1,17 +1,9 @@
 import inspect
 import math
 from bottle import json_dumps, json_loads
-from hdrh.histogram import HdrHistogram, HdrHistogramEncoder
+from hdrh.histogram import HdrHistogram
 
-from wifiology_node_poc.utils import altered_mean, altered_stddev
-
-
-def bytes_to_str(b):
-    if isinstance(b, (bytes, bytearray)):
-        result = repr(b)[2:-1]
-    else:
-        result = b
-    return result
+from wifiology_node_poc.utils import altered_mean, altered_stddev, bytes_to_str
 
 
 class RecordObject(object):

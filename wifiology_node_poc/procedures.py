@@ -12,7 +12,7 @@ import logging
 import time
 import functools
 import os
-from wifiology_node_poc.utils import altered_stddev, altered_mean
+from wifiology_node_poc.utils import altered_stddev, altered_mean, bytes_to_str
 from collections import defaultdict
 from bottle import json_dumps
 
@@ -78,6 +78,7 @@ def binary_to_mac(bin):
     else:
         return ':'.join(("{:02x}".format(ord(c))) for c in bin)
 
+
 def calculate_beacon_jitter(timing_measurements, bssid):
     if not timing_measurements or len(timing_measurements) < 2:
         return None, None, None
@@ -106,7 +107,7 @@ def patched_network_stats(pkt):
     p = pkt.payload
     while isinstance(p, dot11.Dot11Elt):
         if p.ID == 0:
-            summary["ssid"] = dot11.plain_str(p.info)
+            summary["ssid"] = bytes_to_str(p.info)
         elif p.ID == 3:
             summary["channel"] = ord(p.info)
         elif isinstance(p, dot11.Dot11EltRates):

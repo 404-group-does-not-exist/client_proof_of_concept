@@ -17,3 +17,14 @@ def altered_stddev(data):
         return 0.0
     else:
         return statistics.stdev(data)
+
+
+def bytes_to_str(b):
+    if isinstance(b, (bytes, bytearray)):
+        try:
+            result = b.decode('utf-8')
+        except Exception:
+            result = repr(b)[2:-1]
+    else:
+        result = b
+    return result
