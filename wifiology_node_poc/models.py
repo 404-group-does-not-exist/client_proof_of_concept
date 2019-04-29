@@ -630,7 +630,7 @@ class ServiceSetJitterMeasurement(RecordObject):
             "jitterHistogram": self.jitter_histogram.encode().decode('ascii') if self.jitter_histogram else None,
             "jitterHistogramOffset": self.jitter_histogram_offset,
             "interval": self.interval,
-            'extraJSONData': self.extra_data
+            'extraData': self.extra_data
         }
 
     def to_api_upload_payload(self):
@@ -642,5 +642,5 @@ class ServiceSetJitterMeasurement(RecordObject):
             "jitterHistogram": self.jitter_histogram.encode().decode('ascii') if self.jitter_histogram else None,
             "jitterHistogramOffset": self.jitter_histogram_offset,
             "interval": self.interval,
-            'extraJSONData': self.extra_data
+            'extraData': self.extra_data
         }
