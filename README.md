@@ -1,14 +1,11 @@
-# Wifiology Client Proof of Concept
+# Wifiology Listener Node
 ## Current Status
 
 * Build Status: [![Build Status](https://travis-ci.org/404-group-does-not-exist/client_proof_of_concept.svg?branch=master)](https://travis-ci.org/404-group-does-not-exist/client_proof_of_concept) 
 
-## Background
-
-
 ## High Level
 
-The wifiology proof of concept uses an 802.11 wireless adapter to listen for wireless traffic, which it aggregates into
+The wifiology listener node uses an 802.11 wireless adapter to listen for wireless traffic, which it aggregates into
 statistical data about the amount of traffic present in the current location. The adapter is used to listen for 
 beacons for access points (APs) active near by to the system running the Wifiology client. After a suitable number of
 802.11 beacon frames have been captured, the client software scans channel by channel for seen APs for a set amount 
@@ -19,6 +16,12 @@ historical results to build a relative picture of current congestion.
 ## Implementation
 
 This proof of concept uses the Python programming language in conjunction with libpcap to do packet capturing.
+
+## Wifiology Central Server
+
+The wifiology listener node is designed to upload data to the central server, the source code for which
+may be found at: https://github.com/404-group-does-not-exist/Wifiology.
+
 
 ## Further Reading
 ### General Informational
